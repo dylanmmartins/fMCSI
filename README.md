@@ -1,6 +1,6 @@
-# Fast Markov chain Monte Carlo spike inference for calcium imaging data.
+# Fast Markov chain Monte Carlo spike inference for calcium imaging data
 
-Fast continuous-time Markov chain Monte Carlo (MCMC) algorithm for inferring spike times from dF/F traces recorded with calcium indicators.
+Fast continuous-time Markov chain Monte Carlo (MCMC) algorithm for inferring spike times from dF/F traces recorded with calcium indicators. On standard lab hardware, this method can analyze a 20-minute 30 Hz recording with 500 cells in ~5 minutes, compared to 2.5+ hours with existing Matlab implementations of MCMC spike inference.
 
 ## Installation
 
@@ -64,7 +64,7 @@ python -m fMCSI.main --suite2p -dir /data/session -hz 30
 python -m fMCSI.main --caiman  -dir /data/session -hz 30 --mat
 python -m fMCSI.main --array   -dir /data/session -hz 30
 ```
-    and add the flags
+and add the flags
 ```
 -dir /path/to/data        for the data directory (required)
 -hz 30.0                  for the sample rate in Hz
@@ -83,6 +83,7 @@ prob_trace  (n_cells, n_frames)  - per-frame spike-probability trace
 spikes      (n_cells,) object    - per-cell spike times in seconds
 spike_train (n_cells, n_frames)  - binary, frame-resolved spike train
 ```
+
 
 When `outdir` is provided, results are written into a numpy npz file,
 "spike_inference.npz" containing the above arrays. The npz file  will
