@@ -1,0 +1,15 @@
+name: spikeinf
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy>=1.24
+  - scipy>=1.13
+  - numba>=0.60
+  - tqdm>=4.0
+  - pip
+  - pip:
+      - h5py>=3.9
+      - ray>=2.0
+      - fMCSI
