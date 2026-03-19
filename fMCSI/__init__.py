@@ -72,27 +72,22 @@ __all__ = [
     'deconv_from_suite2p',
     'deconv_from_caiman',
     'deconv_from_array',
-
-    'run_deconv',
+    'deconv',
 
     'detect_spikes_from_probs',
 
     'spikes_to_calcium',
-
     'compute_accuracy_strict',
     'compute_cosmic',
     'compute_kurtosis',
 ]
 
-# Entry points
 from .fMCSI import (
     deconv_from_suite2p,
     deconv_from_caiman,
     deconv_from_array,
+    deconv
 )
-
-# Post-processing
-from .helpers import detect_spikes_from_probs
 
 from .helpers import (
     compute_accuracy_strict,

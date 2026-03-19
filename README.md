@@ -43,15 +43,15 @@ results = fMCSI.deconv_from_caiman(
     '/path/to/caiman/results'
 )
 ```
-If running on a numpy array of fluorescence (F) and
-neuropil fluorescence (Fneu):
+If running on a numpy array of fluorescence (`F`) and
+neuropil fluorescence (`Fneu`):
 ```
 import fMCSI
 results = fMCSI.deconv_from_array(
     f=F, fneu=Fneu, hz=30.0, outdir='/path/to/save'
 )
 ```
-If running on a numpy array of dF/F (dff):
+To maximize accuracy, if you have access to the `F` and `Fneu` arrays, you should always use those when computing spike times from an array. If you only have dFF, you can call it running on a numpy array of dF/F (`dFF`):
 ```
 import fMCSI
 results = fMCSI.deconv_from_array(
@@ -61,10 +61,10 @@ results = fMCSI.deconv_from_array(
 ## Usage from command line
 ```
 python -m fMCSI.main --suite2p -dir /data/session -hz 30
-python -m fMCSI.main --caiman  -dir /data/session -hz 30 --mat
+python -m fMCSI.main --caiman  -dir /data/session -hz 30
 python -m fMCSI.main --array   -dir /data/session -hz 30
 ```
-and add the flags
+and add the optional flags
 ```
 -dir /path/to/data        for the data directory (required)
 -hz 30.0                  for the sample rate in Hz
@@ -83,7 +83,6 @@ prob_trace  (n_cells, n_frames)  - per-frame spike-probability trace
 spikes      (n_cells,) object    - per-cell spike times in seconds
 spike_train (n_cells, n_frames)  - binary, frame-resolved spike train
 ```
-
 
 When `outdir` is provided, results are written into a numpy npz file,
 "spike_inference.npz" containing the above arrays. The npz file  will

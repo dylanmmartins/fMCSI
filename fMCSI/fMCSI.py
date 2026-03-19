@@ -179,9 +179,11 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
                 "OMP_NUM_THREADS": "1",
                 "MKL_NUM_THREADS": "1",
                 "OPENBLAS_NUM_THREADS": "1",
-                "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0"
+                "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
+                "RAY_enable_metrics_collection": "0",
             }
-        }
+        },
+        _metrics_export_port=0,
     )
 
     Y = np.atleast_2d(Y)
