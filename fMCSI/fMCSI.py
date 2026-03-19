@@ -15,7 +15,6 @@ import h5py
 import numpy as np
 import ray
 from tqdm import tqdm
-import platform
 from scipy.signal import find_peaks
 import time
 from scipy.ndimage import gaussian_filter1d
@@ -61,17 +60,15 @@ def _compute_otsu_threshold(data):
 
 
 @ray.remote(max_calls=1)
-def _process_cell(Y_cell_ref, cell_idx, params, true_spikes_cell, fs, n_frames, lag_s=0.0):
+def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_s=0.0):
     """
     Process a single cell's fluorescence trace end-to-end.
 
-    Accepts Y_cell as a Ray object reference (via ray.put) so the large data
-    array is stored once in the object store and not re-serialised per worker.
+    Y_cell is a 1-D float32 numpy array passed directly as a task argument.
+    Ray handles serialisation; no explicit ray.get() is needed.
 
     Returns a dict with all per-cell outputs ready for aggregation.
     """
-
-    Y_cell = ray.get(Y_cell_ref) if isinstance(Y_cell_ref, ray.ObjectRef) else Y_cell_ref
 
     t0 = time.time()
     SAMPLES = cont_ca_sampler(Y_cell, params)
@@ -162,24 +159,30 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
     • Y is placed in the Ray object store once (ray.put) so the large array is
       shared by reference rather than copied to every worker.
     """
-    if not ray.is_initialized():
-        if platform.system() == "Windows":
-            ray_dir = r'C:\Data\dylan\ray_tmp'
-        elif platform.system() == "Linux":
-            ray_dir = '/home/dylan/Fast2/ray_tmp'
-        ray.init(
-            _temp_dir=ray_dir,
-            ignore_reinit_error=True,
-            include_dashboard=False,
-            runtime_env={
-                "env_vars": {
-                    "OMP_NUM_THREADS": "1",
-                    "MKL_NUM_THREADS": "1",
-                    "OPENBLAS_NUM_THREADS": "1",
-                    "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0"
-                }
+
+    if ray.is_initialized():
+        ray.shutdown()
+
+    from fMCSI._config import get_path
+    ray_dir = get_path(
+        key='ray_dir',
+        prompt='Select a directory for Ray temporary files.\n'
+               'A fast local drive (e.g. SSD scratch space) is recommended.',
+    )
+
+    ray.init(
+        _temp_dir=ray_dir,
+        ignore_reinit_error=False,
+        include_dashboard=False,
+        runtime_env={
+            "env_vars": {
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "OPENBLAS_NUM_THREADS": "1",
+                "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0"
             }
-        )
+        }
+    )
 
     Y = np.atleast_2d(Y)
     n_cells, n_frames = Y.shape
@@ -192,20 +195,18 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
             import math
             lag_s = -1.0 / (fs * math.log(defg[0]))
         else:
-            lag_s = 0.045  # ~45 ms default (GCaMP6f rise time)
-
-    cell_refs = [ray.put(Y[i].copy()) for i in range(n_cells)]
+            lag_s = 0.045
 
     futures = []
     for i in range(n_cells):
         p_copy   = params.copy() if params else {}
-        
+
         if 'auto_stop' not in p_copy:
             p_copy['auto_stop'] = True
-            
+
         ts_cell  = true_spikes[i] if true_spikes is not None else None
         futures.append(
-            _process_cell.remote(cell_refs[i], i, p_copy, ts_cell, fs, n_frames, lag_s)
+            _process_cell.remote(Y[i].copy(), i, p_copy, ts_cell, fs, n_frames, lag_s)
         )
 
     results_list = []
@@ -426,7 +427,7 @@ def deconv_from_suite2p(datadir, hz=None, f_corr=0.7, planes=None,
             print(f'  Cells: {cell_mask.sum()} / {len(cell_mask)} ROIs')
         else:
             if cells_only and not os.path.isfile(iscell_path):
-                print(f'  iscell.npy not found – using all {F.shape[0]} ROIs')
+                print(f'  iscell.npy not found - using all {F.shape[0]} ROIs')
             else:
                 print(f'  Using all {F.shape[0]} ROIs (--all-rois)')
 
