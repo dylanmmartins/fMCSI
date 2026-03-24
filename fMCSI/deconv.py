@@ -535,16 +535,16 @@ def _build_parser():
             Examples
             --------
             # suite2p output directory (frame rate auto-read from ops.npy)
-            python -m fMCSI.main --suite2p -dir /data/mouse1/suite2p
+            python -m fMCSI.deconv --suite2p -dir /data/mouse1/suite2p
 
             # suite2p, explicit frame rate, two planes, save elsewhere
-            python -m fMCSI.main --suite2p -dir /data/mouse1 -hz 30 --plane 0 1 --outdir /results
+            python -m fMCSI.deconv --suite2p -dir /data/mouse1 -hz 30 --plane 0 1 --outdir /results
 
             # CaImAn HDF5 file
-            python -m fMCSI.main --caiman -dir /data/mouse1 -hz 30
+            python -m fMCSI.deconv --caiman -dir /data/mouse1 -hz 30
 
             # Raw numpy arrays (pass paths as positional arguments)
-            python -m fMCSI.main --array -dir /data/mouse1 -hz 30
+            python -m fMCSI.deconv --array -dir /data/mouse1 -hz 30
         """),
     )
 

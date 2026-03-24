@@ -82,7 +82,7 @@ __all__ = [
     'compute_kurtosis',
 ]
 
-from .fMCSI import (
+from .deconv import (
     deconv_from_suite2p,
     deconv_from_caiman,
     deconv_from_array,

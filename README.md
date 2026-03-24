@@ -60,9 +60,9 @@ results = fMCSI.deconv_from_array(
 ```
 ## Usage from command line
 ```
-python -m fMCSI.main --suite2p -dir /data/session -hz 30
-python -m fMCSI.main --caiman  -dir /data/session -hz 30
-python -m fMCSI.main --array   -dir /data/session -hz 30
+python -m fMCSI.deconv --suite2p -dir /data/session
+python -m fMCSI.deconv --caiman  -dir /data/session
+python -m fMCSI.deconv --array   -dir /data/session -hz 30
 ```
 and add the optional flags
 ```
@@ -74,6 +74,8 @@ and add the optional flags
 --plane 0 1               to specify plane index/indices to process (suite2p only)
 --all-rois                to process all ROIs, including those not classified as cells by suite2p (suite2p only, default: False)
 ```
+You don't need to use the `-Hz` flag if you are running from Suite2p or CaImAn because the sample rate will be identified in the metadata saved out by that method.
+
 ## Resulting data
 
 Each function returns a dict with keys:
