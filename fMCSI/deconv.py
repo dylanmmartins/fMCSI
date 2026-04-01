@@ -61,14 +61,6 @@ def _compute_otsu_threshold(data):
 
 @ray.remote(max_calls=1)
 def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_s=0.0):
-    """
-    Process a single cell's fluorescence trace end-to-end.
-
-    Y_cell is a 1-D float32 numpy array passed directly as a task argument.
-    Ray handles serialisation; no explicit ray.get() is needed.
-
-    Returns a dict with all per-cell outputs ready for aggregation.
-    """
 
     t0 = time.time()
     SAMPLES = cont_ca_sampler(Y_cell, params)
@@ -140,25 +132,6 @@ def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_
 
 
 def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
-    """
-    Run cont_ca_sampler on multiple cells in parallel using Ray.
-
-    Parameters:
-    Y:           np.array (n_cells, n_frames)
-    params:      dict, parameters for the sampler
-    true_spikes: list of true spike-time arrays (optional, for accuracy metrics)
-
-    Returns:
-    results: dict with aggregated outputs across all cells
-
-    Parallelism strategy
-
-    • Outer loop (cells): Ray remote tasks, one per cell.  Each cell is
-      independent so we get perfect parallelism up to the number of CPU cores.
-    • Inner loop (MCMC): Numba @njit kernels (see cont_ca_sampler.py).
-    • Y is placed in the Ray object store once (ray.put) so the large array is
-      shared by reference rather than copied to every worker.
-    """
 
     if ray.is_initialized():
         ray.shutdown()

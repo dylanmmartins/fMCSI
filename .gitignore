@@ -208,3 +208,5 @@ __marimo__/
 
 internals.yaml
 settings.json
+.DS_Store
+/old_figures/*
