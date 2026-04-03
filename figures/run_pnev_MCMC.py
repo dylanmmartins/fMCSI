@@ -49,8 +49,10 @@ def run_matlab_pnevMCMC(dff, fs=30.0, tau=0.5, n_sweeps=1000, true_spikes=None, 
         addpath(genpath(pwd));
         if ispc
             addpath(genpath('C:\\Users\\dmartins\\Documents\\MATLAB\\cvx'));
+            addpath(genpath('C:\\Users\\dmartins\\Documents\\GitHub\\CaImAn-MATLAB'));
         elseif isunix
             addpath(genpath('/home/dylan/Documents/MATLAB/cvx'));
+            addpath(genpath('/home/dylan/Documents/GitHub/CaImAn-MATLAB'));
         end
         
         load('{input_mat}');

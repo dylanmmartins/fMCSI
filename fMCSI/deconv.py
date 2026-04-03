@@ -322,7 +322,7 @@ def _save_results(results, dFF, hz, outdir, tag='', save_mat=False):
 
         mat_path = os.path.join(outdir, f'spike_inference{tag}.mat')
         scipy.io.savemat(mat_path, mat_dict)
-        print(f'Results saved → {mat_path}')
+        print(f'Results saved -> {mat_path}')
 
     return npz_path
 
@@ -487,7 +487,7 @@ def deconv_from_caiman(datadir, hz=None, outdir=None, save_mat=False):
             baseline = np.percentile(C, 8, axis=1, keepdims=True)
             baseline = np.where(np.abs(baseline) < 1e-6, 1e-6, baseline)
             dFF = (C - baseline) / np.abs(baseline)
-            print(f'  Source: estimates/C → dF/F  shape={dFF.shape}')
+            print(f'  Source: estimates/C -> dF/F  shape={dFF.shape}')
 
     print(f'  Frame rate: {fs} Hz')
     out_d = outdir if outdir else datadir

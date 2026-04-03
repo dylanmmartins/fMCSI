@@ -26,6 +26,12 @@ import time
 import numpy as np
 from scipy.signal import find_peaks
 
+# Device selection must happen before TF/Keras are imported.
+if '--device' in sys.argv:
+    _dev_idx = sys.argv.index('--device')
+    if _dev_idx + 1 < len(sys.argv) and sys.argv[_dev_idx + 1] == 'cpu':
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
 try:
     import keras.engine.input_layer as _kil
     _orig_il_init = _kil.InputLayer.__init__
@@ -50,7 +56,7 @@ except Exception as _e:
 
 
 def _probs_to_spikes(probs, fs, height=0.2):
-    """Convert a 1-D probability trace to spike times in seconds."""
+
     min_dist = max(1, int(0.05 * fs))
     peaks, _ = find_peaks(probs, height=height, distance=min_dist)
     return peaks / fs
@@ -69,7 +75,9 @@ def mode_inference(args):
     print(f"[cascade-subprocess] inference  n_cells={n_cells}  fs={fs:.1f}  model={model_name}")
 
     t0 = time.time()
-    probs = cascade.run_cascade(model_name, dff, verbosity=1)
+    import os
+    model_folder = os.path.join(os.path.dirname(cascade.__file__), "Pretrained_models")
+    probs = cascade.predict(model_name, dff, model_folder=model_folder, verbosity=1)
     elapsed = time.time() - t0
     print(f"[cascade-subprocess] finished in {elapsed:.1f}s")
 
@@ -84,7 +92,7 @@ def mode_inference(args):
         cascade_time=np.float64(elapsed),
         fs=np.float32(fs),
     )
-    print(f"[cascade-subprocess] saved → {args.output}")
+    print(f"[cascade-subprocess] saved -> {args.output}")
 
 
 def mode_loo_predict(args):
@@ -121,14 +129,14 @@ def mode_loo_predict(args):
         probs_2d = cascade.predict(ds, dff_2d, model_folder=loo_dir, verbosity=0)
         probs = np.nan_to_num(probs_2d[0], nan=0.0)
         spk = _probs_to_spikes(probs, fs)
-        print(f"    → {len(spk)} spikes detected")
+        print(f"    -> {len(spk)} spikes detected")
 
         preds[f'pred_spikes_{i}'] = spk.astype(np.float64)
         preds[f'dataset_{i}'] = data[f'dataset_{i}']
         preds[f'cell_idx_{i}'] = data[f'cell_idx_{i}']
 
     np.savez(args.output, **preds)
-    print(f"[cascade-subprocess] saved → {args.output}")
+    print(f"[cascade-subprocess] saved -> {args.output}")
 
 
 def main():
@@ -143,6 +151,8 @@ def main():
     parser.add_argument('--output', required=True, help='Output NPZ path')
     parser.add_argument('--model',  default=None,
                         help='CASCADE model name (inference mode, optional)')
+    parser.add_argument('--device', default='gpu', choices=['cpu', 'gpu'],
+                        help='Hardware device for inference: cpu or gpu (default: gpu)')
     # loo-predict mode
     parser.add_argument('--raster-cells', dest='raster_cells',
                         help='Path to raster_cells.npz (loo-predict mode)')

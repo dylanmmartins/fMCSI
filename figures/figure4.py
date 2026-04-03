@@ -7,7 +7,6 @@ Written DMM, March 2026
 """
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -47,7 +46,7 @@ _METHODS = {
     'cascade_loo': {'label': 'CASCADE', 'color': '#8172B3'},
 }
 _METHOD_ORDER  = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
-_TRACE_METHODS = ['fmcsi', 'oasis', 'matlab']   # methods that write trace NPZs
+_TRACE_METHODS = ['fmcsi', 'oasis', 'matlab']
 
 _SENSOR_ORDER = [
     'GCaMP6f', 'GCaMP6s', 'GCaMP7f', 'GCaMP8f', 'GCaMP8m', 'GCaMP8s',
@@ -80,6 +79,46 @@ RASTER_PINS    = [
     ('DS21-jGECO1a-m-V1',                    2),
     ('DS31-GCaMP8m-m-V1',                    6),
 ]
+
+
+def _save_records(records, path):
+
+    if not records:
+        np.savez(path)
+        return
+    keys = list(records[0].keys())
+    arrays = {}
+    for k in keys:
+        vals = [r.get(k) for r in records]
+        if all(isinstance(v, str) or v is None for v in vals):
+            arrays[k] = np.array([v if v is not None else '' for v in vals], dtype=object)
+        else:
+            try:
+                arrays[k] = np.array(vals, dtype=np.float64)
+            except (TypeError, ValueError):
+                arrays[k] = np.array([str(v) for v in vals], dtype=object)
+    np.savez(path, **arrays)
+
+
+def _load_records(path):
+
+    d = np.load(path, allow_pickle=True)
+    keys = list(d.files)
+    if not keys:
+        return []
+    n = len(d[keys[0]])
+    records = []
+    for i in range(n):
+        row = {}
+        for k in keys:
+            v = d[k][i]
+            if isinstance(v, np.ndarray) and v.ndim == 0:
+                v = v.item()
+            elif hasattr(v, 'item'):
+                v = v.item()
+            row[k] = v
+        records.append(row)
+    return records
 
 
 def _fbeta(precision, recall):
@@ -123,6 +162,7 @@ def _get_sensor(ds_folder):
 
 
 def diagnose_time_shift(true_spikes, inferred_probs, fs, max_lag=10.0):
+
     n_frames = inferred_probs.shape[1]
     t_bins   = np.arange(n_frames + 1) / fs
     lags     = []
@@ -145,6 +185,7 @@ def diagnose_time_shift(true_spikes, inferred_probs, fs, max_lag=10.0):
 
 
 def compute_accuracy_window(true_spikes, predicted_spikes, tolerance=0.1):
+
     precs, recs, f1s = [], [], []
     for t, p in zip(true_spikes, predicted_spikes):
         t = np.asarray(t, dtype=np.float64).flatten()
@@ -167,6 +208,7 @@ def compute_accuracy_window(true_spikes, predicted_spikes, tolerance=0.1):
 
 
 def _make_event_gt(spike_times_s, tau_s, event_window=0.250):
+
     t = np.asarray(spike_times_s, dtype=np.float64)
     if len(t) == 0:
         return t.copy()
@@ -184,6 +226,7 @@ def _make_event_gt(spike_times_s, tau_s, event_window=0.250):
 
 
 def _build_params(fs, tau):
+
     g_rise  = float(np.exp(-1.0 / (TAU_RISE * fs)))
     g_decay = float(np.exp(-1.0 / (tau * fs)))
     return {
@@ -195,7 +238,7 @@ def _build_params(fs, tau):
     }
 
 def process_dataset(ds_folder, ground_truth_dir, model):
-    """Load, filter, infer (one model), and evaluate all cells in one folder."""
+
     ds_path    = os.path.join(ground_truth_dir, ds_folder)
     tau        = get_tau(ds_folder)
     ephys_rate = get_ephys_rate(ds_folder)
@@ -384,16 +427,15 @@ def test_figure(data_dir, ground_truth_dir, methods=None):
             if traces is not None:
                 npz_path = os.path.join(traces_dir, f'{ds_folder}_traces.npz')
                 np.savez(npz_path, **traces)
-                print(f"  Traces → {npz_path}")
+                print(f"  Traces -> {npz_path}")
 
         print(f"\n{'='*65}")
         print(f"  Total elapsed: {(time.time()-t_total)/60:.1f} min")
         print(f"  Total cells evaluated: {len(all_records)}")
 
-        out_path = os.path.join(data_dir, f'ground_truth_results_{model}.json')
-        with open(out_path, 'w') as fh:
-            json.dump(all_records, fh, indent=2)
-        print(f"  Results → {out_path}")
+        out_path = os.path.join(data_dir, f'ground_truth_results_{model}.npz')
+        _save_records(all_records, out_path)
+        print(f"  Results -> {out_path}")
 
 
 def _traces_dir(data_dir, method_key):
@@ -404,12 +446,11 @@ def _load_all(data_dir):
 
     all_records = {}
     for method_key in _METHOD_ORDER:
-        json_path = os.path.join(data_dir, f'ground_truth_results_{method_key}.json')
-        if not os.path.exists(json_path):
-            print(f'  (skipping {method_key}: {json_path} not found)')
+        npz_path = os.path.join(data_dir, f'ground_truth_results_{method_key}.npz')
+        if not os.path.exists(npz_path):
+            print(f'  (skipping {method_key}: {npz_path} not found)')
             continue
-        with open(json_path) as fh:
-            recs = json.load(fh)
+        recs = _load_records(npz_path)
         for r in recs:
             r['method'] = method_key
         all_records[method_key] = recs
@@ -539,7 +580,7 @@ def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
         save[f'dataset_{i}']     = np.bytes_(c['ds'].encode())
         save[f'cell_idx_{i}']    = np.int32(c['cell_idx'])
     np.savez(raster_cells_npz, **save)
-    print(f'  Saved raster cell info → {raster_cells_npz}')
+    print(f'  Saved raster cell info -> {raster_cells_npz}')
 
 
     if os.path.exists(cascade_preds_npz):

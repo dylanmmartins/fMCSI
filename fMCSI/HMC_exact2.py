@@ -20,8 +20,8 @@ def HMC_exact2(F, g, M, mu_r, cov, L, initial_X):
     g:         (m, 1) numpy array
     M:         (d, d) numpy array, symmetric positive definite
     mu_r:      (d, 1) numpy array
-    cov:       bool. True → M is covariance, mean is mu_r.
-               False → M is precision matrix, log-density is -½ X'MX + r'X
+    cov:       bool. True -> M is covariance, mean is mu_r.
+               False -> M is precision matrix, log-density is -½ X'MX + r'X
     L:         int, number of samples desired
     initial_X: (d, 1) numpy array, must satisfy constraints
 

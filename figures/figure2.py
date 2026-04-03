@@ -19,7 +19,6 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import pandas as pd
 from scipy.signal import find_peaks
 from oasis.functions import deconvolve
 
@@ -40,18 +39,16 @@ BETA = 0.5
 USE_STRICT_ACCURACY = True
 
 COLORS = {
-    'fMCSI':   '#4C72B0',
-    'MATLAB':  '#DD8452',
-    'OASIS':   '#55A868',
-    'CASCADE': '#8172B3',
+    'fMCSI':       '#4C72B0',
+    'MATLAB':      '#DD8452',
+    'OASIS':       '#55A868',
+    'CASCADE_GPU': '#8172B3',
+    'CASCADE_CPU': '#B39DDB',
 }
 
 
-def _run_cascade_inference(dff, fs, data_dir, prefix):
-    """
-    Invoke run_cascade_subprocess.py in the 'cascade' conda env.
-    Returns (cascade_probs, cascade_spikes_list, elapsed_seconds).
-    """
+def _run_cascade_inference(dff, fs, data_dir, prefix, device='gpu'):
+
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'run_cascade_subprocess.py')
     input_path  = os.path.join(data_dir, f'{prefix}_input.npz')
@@ -60,7 +57,8 @@ def _run_cascade_inference(dff, fs, data_dir, prefix):
     np.savez(input_path, dff=dff.astype(np.float32), fs=np.float32(fs))
     subprocess.run(
         ['conda', 'run', '-n', 'cascade', 'python', script,
-         '--mode', 'inference', '--input', input_path, '--output', output_path],
+         '--mode', 'inference', '--input', input_path, '--output', output_path,
+         '--device', device],
         check=True
     )
     result = np.load(output_path, allow_pickle=True)
@@ -101,6 +99,66 @@ def _row(exp, model, tau_, fs_, time_, m, sweeps=0, n_cells=None, duration=None,
     d.update(extra)
     return d
 
+def _save_records(records, path):
+    if not records:
+        np.savez(path)
+        return
+    keys = list(dict.fromkeys(k for r in records for k in r))
+    out = {}
+    for k in keys:
+        vals = [r.get(k, None) for r in records]
+        if any(isinstance(v, str) for v in vals if v is not None):
+            out[k] = np.array([str(v) if v is not None else '' for v in vals], dtype=object)
+        else:
+            out[k] = np.array([float(v) if v is not None else np.nan for v in vals],
+                               dtype=np.float64)
+    np.savez(path, **out)
+
+
+def _load_records(path):
+
+    d = np.load(path, allow_pickle=True)
+    return {k: d[k] for k in d.files}
+
+
+def _tbl_len(tbl):
+    return len(next(iter(tbl.values()))) if tbl else 0
+
+
+def _tbl_filter(tbl, col, val):
+    mask = tbl[col] == val
+    return {k: v[mask] for k, v in tbl.items()}
+
+
+def _tbl_sort(tbl, col):
+    idx = np.argsort(tbl[col].astype(float))
+    return {k: v[idx] for k, v in tbl.items()}
+
+
+def _tbl_concat(tbls):
+    tbls = [t for t in tbls if t]
+    if not tbls:
+        return {}
+    all_keys = list(dict.fromkeys(k for t in tbls for k in t))
+    result = {}
+    for k in all_keys:
+        parts = []
+        for t in tbls:
+            if k in t:
+                parts.append(t[k])
+            else:
+                n = _tbl_len(t)
+                ref = next((t2[k] for t2 in tbls if k in t2), None)
+                if ref is not None and ref.dtype == object:
+                    parts.append(np.array([''] * n, dtype=object))
+                else:
+                    parts.append(np.full(n, np.nan))
+        if any(p.dtype == object for p in parts):
+            result[k] = np.concatenate([p.astype(object) for p in parts])
+        else:
+            result[k] = np.concatenate([p.astype(np.float64) for p in parts])
+    return result
+
 
 def _oasis_spikes(dff, fs, tau, n_cells):
     diff = np.diff(dff, axis=1)
@@ -117,7 +175,7 @@ def _oasis_spikes(dff, fs, tau, n_cells):
 
 def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                      run_cascade=True):
-    """Sweep over MCMC sample counts; also run OASIS baseline and optional CASCADE."""
+
     n_cells     = 50
     duration    = 600
     fs          = 30.0
@@ -135,7 +193,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
     npz_spikes = {'true': true_spikes}
     npz_calcium = {}
 
-    partial_path = os.path.join(data_dir, 'benchmark_sweeps_partial.json')
+    partial_path = os.path.join(data_dir, 'benchmark_sweeps_partial.npz')
 
     if run_oasis:
         print('\nRunning OASIS (baseline)...')
@@ -149,20 +207,21 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
         npz_spikes['oasis'] = oas_spk
         npz_calcium['oasis'] = np.array(oas_cal)
         print(f'  OASIS: {time_oasis:.1f}s  F1={results[-1]["F1"]:.3f}')
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
     if run_cascade:
-        print('\nRunning CASCADE (subprocess, baseline)...')
-        cascade_probs, cascade_spikes, time_cascade = _run_cascade_inference(
-            dff, fs, data_dir, 'bench_sweeps_cascade_baseline'
-        )
-        results.append(_row('Sweeps', 'CASCADE', tau, fs, time_cascade,
-                            _metrics(true_spikes, cascade_spikes, true_events, fs),
-                            sweeps=0, n_cells=n_cells, duration=duration,
-                            Samples_per_sec=np.nan))
-        npz_spikes['cascade'] = cascade_spikes
-        print(f'  CASCADE: {time_cascade:.1f}s  F1={results[-1]["F1"]:.3f}')
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+            print(f'\nRunning CASCADE (subprocess, {_dev.upper()}, baseline)...')
+            _, cascade_spikes, time_cascade = _run_cascade_inference(
+                dff, fs, data_dir, f'bench_sweeps_cascade_baseline_{_dev}', device=_dev
+            )
+            results.append(_row('Sweeps', _model, tau, fs, time_cascade,
+                                _metrics(true_spikes, cascade_spikes, true_events, fs),
+                                sweeps=0, n_cells=n_cells, duration=duration,
+                                Samples_per_sec=np.nan))
+            npz_spikes[f'cascade_{_dev}'] = cascade_spikes
+            print(f'  CASCADE ({_dev.upper()}): {time_cascade:.1f}s  F1={results[-1]["F1"]:.3f}')
+            _save_records(results, partial_path)
 
     print(f'\n--- Varying sweeps: {sweeps_list} ---')
     for s in sweeps_list:
@@ -199,7 +258,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             except Exception as exc:
                 print(f'    MATLAB failed: {exc}')
 
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
     npz_save = {'dff': dff, 'fs': fs, 'tau': tau}
     for k, v in npz_spikes.items():
@@ -207,7 +266,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
     for k, v in npz_calcium.items():
         npz_save[f'calcium_{k}'] = v
     np.savez(os.path.join(data_dir, 'benchmark_sweeps_traces.npz'), **npz_save)
-    return pd.DataFrame(results)
+    return
 
 
 def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
@@ -221,7 +280,7 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
     fixed_cells    = 100
 
     results = []
-    partial_path = os.path.join(data_dir, 'benchmark_scalability_partial.json')
+    partial_path = os.path.join(data_dir, 'benchmark_scalability_partial.npz')
 
     print('\n--- Cell-count scaling ---')
     for n_cells in cell_counts:
@@ -276,18 +335,19 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
                 print(f'    OASIS failed: {exc}')
 
         if run_cascade:
-            try:
-                _, _, t_cascade = _run_cascade_inference(
-                    dff, fs, data_dir, f'bench_scale_cells_{n_cells}')
-                results.append({'Experiment': 'Cell_Scaling', 'Model': 'CASCADE',
-                                'N_Cells': n_cells, 'Time': t_cascade,
-                                'Samples_per_sec': np.nan,
-                                'Duration': fixed_duration, 'Frames': n_frames})
-                print(f'    CASCADE: {t_cascade:.1f}s')
-            except Exception as exc:
-                print(f'    CASCADE failed: {exc}')
+            for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+                try:
+                    _, _, t_cascade = _run_cascade_inference(
+                        dff, fs, data_dir, f'bench_scale_cells_{n_cells}_{_dev}', device=_dev)
+                    results.append({'Experiment': 'Cell_Scaling', 'Model': _model,
+                                    'N_Cells': n_cells, 'Time': t_cascade,
+                                    'Samples_per_sec': np.nan,
+                                    'Duration': fixed_duration, 'Frames': n_frames})
+                    print(f'    CASCADE ({_dev.upper()}): {t_cascade:.1f}s')
+                except Exception as exc:
+                    print(f'    CASCADE ({_dev.upper()}) failed: {exc}')
 
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
     print('\n--- Duration scaling ---')
     for dur in durations:
@@ -342,20 +402,21 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
                 print(f'    OASIS failed: {exc}')
 
         if run_cascade:
-            try:
-                _, _, t_cascade = _run_cascade_inference(
-                    dff, fs, data_dir, f'bench_scale_dur_{dur}')
-                results.append({'Experiment': 'Duration_Scaling', 'Model': 'CASCADE',
-                                'Duration': dur, 'Time': t_cascade,
-                                'Samples_per_sec': np.nan,
-                                'N_Cells': fixed_cells, 'Frames': n_frames})
-                print(f'    CASCADE: {t_cascade:.1f}s')
-            except Exception as exc:
-                print(f'    CASCADE failed: {exc}')
+            for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+                try:
+                    _, _, t_cascade = _run_cascade_inference(
+                        dff, fs, data_dir, f'bench_scale_dur_{dur}_{_dev}', device=_dev)
+                    results.append({'Experiment': 'Duration_Scaling', 'Model': _model,
+                                    'Duration': dur, 'Time': t_cascade,
+                                    'Samples_per_sec': np.nan,
+                                    'N_Cells': fixed_cells, 'Frames': n_frames})
+                    print(f'    CASCADE ({_dev.upper()}): {t_cascade:.1f}s')
+                except Exception as exc:
+                    print(f'    CASCADE ({_dev.upper()}) failed: {exc}')
 
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
-    return pd.DataFrame(results)
+    return
 
 
 def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
@@ -369,7 +430,7 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
     fixed_tau  = 1.2
 
     results = []
-    partial_path = os.path.join(data_dir, 'benchmark_params_partial.json')
+    partial_path = os.path.join(data_dir, 'benchmark_params_partial.npz')
 
     print('\n--- Tau sensitivity ---')
     for tau in tau_values:
@@ -412,16 +473,17 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                 print(f'    OASIS: F1={results[-1]["F1"]:.3f}')
 
             if run_cascade:
-                _, cascade_spikes, t_cascade = _run_cascade_inference(
-                    dff, fixed_fs, data_dir, f'bench_tau_{tau}')
-                results.append(_row('Tau_Sensitivity', 'CASCADE', tau, fixed_fs, t_cascade,
-                                    _metrics(true_spikes, cascade_spikes, true_events, fixed_fs),
-                                    n_cells=n_cells, duration=duration))
-                print(f'    CASCADE: F1={results[-1]["F1"]:.3f}')
+                for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+                    _, cascade_spikes, t_cascade = _run_cascade_inference(
+                        dff, fixed_fs, data_dir, f'bench_tau_{tau}_{_dev}', device=_dev)
+                    results.append(_row('Tau_Sensitivity', _model, tau, fixed_fs, t_cascade,
+                                        _metrics(true_spikes, cascade_spikes, true_events, fixed_fs),
+                                        n_cells=n_cells, duration=duration))
+                    print(f'    CASCADE ({_dev.upper()}): F1={results[-1]["F1"]:.3f}')
 
         except Exception as exc:
             print(f'  Failed for tau={tau}: {exc}')
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
     print('\n--- Frame-rate sensitivity ---')
     for fs in fs_values:
@@ -464,18 +526,19 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                 print(f'    OASIS: F1={results[-1]["F1"]:.3f}')
 
             if run_cascade:
-                _, cascade_spikes, t_cascade = _run_cascade_inference(
-                    dff, fs, data_dir, f'bench_fs_{fs}')
-                results.append(_row('Fs_Sensitivity', 'CASCADE', fixed_tau, fs, t_cascade,
-                                    _metrics(true_spikes, cascade_spikes, true_events, fs),
-                                    n_cells=n_cells, duration=duration))
-                print(f'    CASCADE: F1={results[-1]["F1"]:.3f}')
+                for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+                    _, cascade_spikes, t_cascade = _run_cascade_inference(
+                        dff, fs, data_dir, f'bench_fs_{fs}_{_dev}', device=_dev)
+                    results.append(_row('Fs_Sensitivity', _model, fixed_tau, fs, t_cascade,
+                                        _metrics(true_spikes, cascade_spikes, true_events, fs),
+                                        n_cells=n_cells, duration=duration))
+                    print(f'    CASCADE ({_dev.upper()}): F1={results[-1]["F1"]:.3f}')
 
         except Exception as exc:
             print(f'  Failed for fs={fs}: {exc}')
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
-    return pd.DataFrame(results)
+    return
 
 
 def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
@@ -494,7 +557,7 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
     ]
 
     results = []
-    partial_path = os.path.join(data_dir, 'benchmark_kurtosis_partial.json')
+    partial_path = os.path.join(data_dir, 'benchmark_kurtosis_partial.npz')
 
     for min_k, max_k in kurtosis_ranges:
         label = f'{min_k}-{max_k}'
@@ -551,21 +614,22 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                 print(f'    OASIS: F1={results[-1]["F1"]:.3f}')
 
             if run_cascade:
-                _, cascade_spikes, t_cascade = _run_cascade_inference(
-                    dff, fs, data_dir, f'bench_kurt_{label}')
-                results.append({**base, 'Model': 'CASCADE', 'Time': t_cascade,
-                                 'Mean_Kurtosis': mean_kurt, **dict(zip(
-                                     ['F1','Precision','Recall',
-                                      'F1_window','Precision_window','Recall_window',
-                                      'F1_event','Precision_event','Recall_event','COSMIC'],
-                                     km(cascade_spikes)))})
-                print(f'    CASCADE: F1={results[-1]["F1"]:.3f}')
+                for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+                    _, cascade_spikes, t_cascade = _run_cascade_inference(
+                        dff, fs, data_dir, f'bench_kurt_{label}_{_dev}', device=_dev)
+                    results.append({**base, 'Model': _model, 'Time': t_cascade,
+                                     'Mean_Kurtosis': mean_kurt, **dict(zip(
+                                         ['F1','Precision','Recall',
+                                          'F1_window','Precision_window','Recall_window',
+                                          'F1_event','Precision_event','Recall_event','COSMIC'],
+                                         km(cascade_spikes)))})
+                    print(f'    CASCADE ({_dev.upper()}): F1={results[-1]["F1"]:.3f}')
 
         except Exception as exc:
             print(f'  Failed for kurtosis {label}: {exc}')
-        pd.DataFrame(results).to_json(partial_path, orient='records', indent=4)
+        _save_records(results, partial_path)
 
-    return pd.DataFrame(results)
+    return
 
 
 def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
@@ -585,7 +649,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
     npz_calcium = {}
 
     all_results  = []
-    partial_path = os.path.join(data_dir, 'firing_rate_sensitivity_partial.json')
+    partial_path = os.path.join(data_dir, 'firing_rate_sensitivity_partial.npz')
 
     def per_cell(model, i, pred_spk_i, time_i):
         prec,   rec,   f1   = fMCSI.compute_accuracy_strict([true_spikes[i]], [pred_spk_i])
@@ -614,7 +678,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
             print(f'  Finished in {total_time:.1f}s')
         except Exception as exc:
             print(f'  fMCSI failed: {exc}')
-        pd.DataFrame(all_results).to_json(partial_path, orient='records', indent=4)
+        _save_records(all_results, partial_path)
 
     if run_matlab:
         print('\nRunning MATLAB...')
@@ -633,7 +697,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
                 trad_spikes_all.append(np.array([]))
         print('\n  Finished.')
         npz_spikes['trad_mcmc'] = trad_spikes_all
-        pd.DataFrame(all_results).to_json(partial_path, orient='records', indent=4)
+        _save_records(all_results, partial_path)
 
     if run_oasis:
         print('\nRunning OASIS...')
@@ -648,20 +712,21 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
             print(f'  Finished in {total_time:.1f}s')
         except Exception as exc:
             print(f'  OASIS failed: {exc}')
-        pd.DataFrame(all_results).to_json(partial_path, orient='records', indent=4)
+        _save_records(all_results, partial_path)
 
     if run_cascade:
-        print('\nRunning CASCADE (subprocess)...')
-        try:
-            cascade_probs, cascade_spikes, t_cascade = _run_cascade_inference(
-                dff, fs, data_dir, 'bench_firerate_cascade')
-            for i in range(n_cells):
-                all_results.append(per_cell('CASCADE', i, cascade_spikes[i], np.nan))
-            npz_spikes['cascade'] = cascade_spikes
-            print(f'  CASCADE finished in {t_cascade:.1f}s')
-        except Exception as exc:
-            print(f'  CASCADE failed: {exc}')
-        pd.DataFrame(all_results).to_json(partial_path, orient='records', indent=4)
+        for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+            print(f'\nRunning CASCADE (subprocess, {_dev.upper()})...')
+            try:
+                _, cascade_spikes, t_cascade = _run_cascade_inference(
+                    dff, fs, data_dir, f'bench_firerate_cascade_{_dev}', device=_dev)
+                for i in range(n_cells):
+                    all_results.append(per_cell(_model, i, cascade_spikes[i], np.nan))
+                npz_spikes[f'cascade_{_dev}'] = cascade_spikes
+                print(f'  CASCADE ({_dev.upper()}) finished in {t_cascade:.1f}s')
+            except Exception as exc:
+                print(f'  CASCADE ({_dev.upper()}) failed: {exc}')
+            _save_records(all_results, partial_path)
 
     if all_results:
         npz_save = {'dff': dff, 'fs': fs, 'tau': tau,
@@ -672,7 +737,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
             npz_save[f'calcium_{k}'] = v
         np.savez(os.path.join(data_dir, 'firing_rate_sensitivity_traces.npz'), **npz_save)
 
-    return pd.DataFrame(all_results)
+    return
 
 def run_test(data_dir='.', run_fmcsi=True, run_matlab=True,
              run_oasis=True, run_cascade=True):
@@ -733,28 +798,22 @@ def _set_three_ticks_x(ax):
     ax.set_xticklabels([f'{v:.3g}' for v in [lo, (lo + hi) / 2, hi]])
 
 
-def _filter_cascade_shared_x(cascade_sub, full_df, xcol):
-    other_x = set(full_df[full_df['Model'] != 'CASCADE'][xcol].dropna().tolist())
-    return cascade_sub[cascade_sub[xcol].isin(other_x)]
+def _filter_cascade_shared_x(cascade_sub, full_tbl, xcol):
+    non_cascade = np.array([not str(m).startswith('CASCADE') for m in full_tbl['Model']])
+    vals = full_tbl[xcol][non_cascade].astype(float)
+    other_x = set(vals[~np.isnan(vals)].tolist())
+    mask = np.isin(cascade_sub[xcol].astype(float), list(other_x))
+    return {k: v[mask] for k, v in cascade_sub.items()}
 
 
 def plot_figure(data_dir='.'):
-    """
-    Load partial JSON benchmark files from data_dir and produce Figure 2.
 
-    Reads (all in data_dir):
-        benchmark_sweeps_partial.json
-        benchmark_scalability_partial.json
-        benchmark_params_partial.json
-        benchmark_kurtosis_partial.json
-        firing_rate_sensitivity_partial.json
-    """
     partial_files = [
-        'benchmark_sweeps_partial.json',
-        'benchmark_scalability_partial.json',
-        'benchmark_params_partial.json',
-        'benchmark_kurtosis_partial.json',
-        'firing_rate_sensitivity_partial.json',
+        'benchmark_sweeps_partial.npz',
+        'benchmark_scalability_partial.npz',
+        'benchmark_params_partial.npz',
+        'benchmark_kurtosis_partial.npz',
+        'firing_rate_sensitivity_partial.npz',
     ]
 
     all_records = []
@@ -762,13 +821,9 @@ def plot_figure(data_dir='.'):
         fpath = os.path.join(data_dir, fname)
         if os.path.exists(fpath):
             try:
-                records = pd.read_json(fpath)
-                col_map = {c: c.title()
-                           for c in records.columns
-                           if c == c.lower() or c == c.upper()}
-                records = records.rename(columns=col_map)
-                all_records.append(records)
-                print(f'Loaded {fpath}  ({len(records)} rows)')
+                tbl = _load_records(fpath)
+                all_records.append(tbl)
+                print(f'Loaded {fpath}  ({_tbl_len(tbl)} rows)')
             except Exception as exc:
                 print(f'Error reading {fpath}: {exc}')
 
@@ -776,9 +831,7 @@ def plot_figure(data_dir='.'):
         raise RuntimeError(f'No partial benchmark files found in {data_dir}. '
                            'Run --mode test first.')
 
-    combined = pd.concat(all_records, ignore_index=True)
-    dataframes = {m: combined[combined['Model'] == m]
-                  for m in combined['Model'].unique()}
+    combined = _tbl_concat(all_records)
 
     f1_col   = 'F1'        if USE_STRICT_ACCURACY else 'F1_window'
     prec_col = 'Precision' if USE_STRICT_ACCURACY else 'Precision_window'
@@ -794,63 +847,70 @@ def plot_figure(data_dir='.'):
     fig, axes = plt.subplot_mosaic(mosaic, figsize=(7, 4.5), dpi=300)
 
     for model in ['fMCSI', 'MATLAB']:
-        if model in dataframes:
-            subset = dataframes[model][dataframes[model]['Experiment'] == 'Sweeps'].sort_values('Sweeps')
-            if not subset.empty:
-                axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
-                                    '.-', label=model, color=COLORS.get(model, 'k'))
-                r2l, r2p, c = _fit_scaling(subset['Sweeps'], subset['Time'])
-                scaling_stats.append({'Experiment': 'Sweeps', 'Model': model,
-                                       'Variable': 'Sweeps', 'Lin_R2': r2l,
-                                       'Poly_R2': r2p, 'Conclusion': c})
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
+            continue
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Sweeps'), 'Sweeps')
+        if _tbl_len(subset) > 0:
+            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
+                                '.-', label=model, color=COLORS.get(model, 'k'))
+            r2l, r2p, c = _fit_scaling(subset['Sweeps'], subset['Time'])
+            scaling_stats.append({'Experiment': 'Sweeps', 'Model': model,
+                                   'Variable': 'Sweeps', 'Lin_R2': r2l,
+                                   'Poly_R2': r2p, 'Conclusion': c})
     axes['sweeps'].set_xlabel('# sweeps')
     axes['sweeps'].set_ylabel('compute time (min)')
 
-    for model in ['MATLAB', 'OASIS', 'CASCADE', 'fMCSI']:
-        if model in dataframes:
-            subset = dataframes[model][dataframes[model]['Experiment'] == 'Cell_Scaling'].sort_values('N_Cells')
-            if model == 'CASCADE':
-                subset = _filter_cascade_shared_x(
-                    subset, combined[combined['Experiment'] == 'Cell_Scaling'], 'N_Cells')
-            if not subset.empty:
-                axes['cells'].plot(subset['N_Cells'], subset['Time'] / 3600.,
-                                   '.-', label=model, color=COLORS.get(model, 'k'))
-                r2l, r2p, c = _fit_scaling(subset['N_Cells'], subset['Time'])
-                scaling_stats.append({'Experiment': 'Cell_Scaling', 'Model': model,
-                                       'Variable': 'N_Cells', 'Lin_R2': r2l,
-                                       'Poly_R2': r2p, 'Conclusion': c})
+    for model in ['MATLAB', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
+            continue
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Cell_Scaling'), 'N_Cells')
+        if model.startswith('CASCADE'):
+            subset = _filter_cascade_shared_x(
+                subset, _tbl_filter(combined, 'Experiment', 'Cell_Scaling'), 'N_Cells')
+        if _tbl_len(subset) > 0:
+            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 3600.,
+                               '.-', label=model, color=COLORS.get(model, 'k'))
+            r2l, r2p, c = _fit_scaling(subset['N_Cells'], subset['Time'])
+            scaling_stats.append({'Experiment': 'Cell_Scaling', 'Model': model,
+                                   'Variable': 'N_Cells', 'Lin_R2': r2l,
+                                   'Poly_R2': r2p, 'Conclusion': c})
     axes['cells'].set_xlabel('# cells')
     axes['cells'].set_ylabel('compute time (hours)')
 
-    for model in ['MATLAB', 'OASIS', 'CASCADE', 'fMCSI']:
-        if model in dataframes:
-            subset = dataframes[model][dataframes[model]['Experiment'] == 'Duration_Scaling'].sort_values('Duration')
-            if model == 'CASCADE':
-                subset = _filter_cascade_shared_x(
-                    subset, combined[combined['Experiment'] == 'Duration_Scaling'], 'Duration')
-            if not subset.empty:
-                axes['duration'].plot(subset['Duration'] / 60., subset['Time'] / 3600.,
-                                      '.-', label=model, color=COLORS.get(model, 'k'))
-                r2l, r2p, c = _fit_scaling(subset['Duration'], subset['Time'])
-                scaling_stats.append({'Experiment': 'Duration_Scaling', 'Model': model,
-                                       'Variable': 'Duration', 'Lin_R2': r2l,
-                                       'Poly_R2': r2p, 'Conclusion': c})
+    for model in ['MATLAB', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
+            continue
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Duration_Scaling'), 'Duration')
+        if model.startswith('CASCADE'):
+            subset = _filter_cascade_shared_x(
+                subset, _tbl_filter(combined, 'Experiment', 'Duration_Scaling'), 'Duration')
+        if _tbl_len(subset) > 0:
+            axes['duration'].plot(subset['Duration'] / 60., subset['Time'] / 3600.,
+                                  '.-', label=model, color=COLORS.get(model, 'k'))
+            r2l, r2p, c = _fit_scaling(subset['Duration'], subset['Time'])
+            scaling_stats.append({'Experiment': 'Duration_Scaling', 'Model': model,
+                                   'Variable': 'Duration', 'Lin_R2': r2l,
+                                   'Poly_R2': r2p, 'Conclusion': c})
     axes['duration'].set_xlabel('recording duration (min)')
     axes['duration'].set_ylabel('compute time (hours)')
     _set_three_ticks_x(axes['duration'])
 
-    for model in ['MATLAB', 'CASCADE', 'OASIS', 'fMCSI']:
-        if model not in dataframes:
+    for model in ['MATLAB', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
             continue
         for exp, xcol, ax_p, ax_r in [
             ('Tau_Sensitivity', 'Tau', 'tau_p', 'tau_r'),
             ('Fs_Sensitivity',  'Fs',  'fs_p',  'fs_r'),
         ]:
-            subset = dataframes[model][dataframes[model]['Experiment'] == exp].sort_values(xcol)
-            if model == 'CASCADE':
+            subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', exp), xcol)
+            if model.startswith('CASCADE'):
                 subset = _filter_cascade_shared_x(
-                    subset, combined[combined['Experiment'] == exp], xcol)
-            if not subset.empty:
+                    subset, _tbl_filter(combined, 'Experiment', exp), xcol)
+            if _tbl_len(subset) > 0:
                 axes[ax_p].plot(subset[xcol], subset[prec_col], '.-',
                                 color=COLORS.get(model, 'k'))
                 axes[ax_r].plot(subset[xcol], subset[rec_col],  '.-',
@@ -865,15 +925,16 @@ def plot_figure(data_dir='.'):
         axes[ax_key].set_ylim(-0.05, 1.05)
         _set_three_ticks_x(axes[ax_key])
 
-    for model in ['MATLAB', 'CASCADE', 'OASIS', 'fMCSI']:
-        if model not in dataframes:
+    for model in ['MATLAB', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
             continue
-        subset = dataframes[model][dataframes[model]['Experiment'] == 'Kurtosis_Sensitivity'].sort_values('Mean_Kurtosis')
-        if model == 'CASCADE':
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Kurtosis_Sensitivity'), 'Mean_Kurtosis')
+        if model.startswith('CASCADE'):
             subset = _filter_cascade_shared_x(
-                subset, combined[combined['Experiment'] == 'Kurtosis_Sensitivity'], 'Mean_Kurtosis')
-        if not subset.empty:
-            fb = _fbeta(subset[prec_col].values, subset[rec_col].values)
+                subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'), 'Mean_Kurtosis')
+        if _tbl_len(subset) > 0:
+            fb = _fbeta(subset[prec_col], subset[rec_col])
             axes['kurt_f'].plot(subset['Mean_Kurtosis'], fb, '.-',
                                 color=COLORS.get(model, 'k'))
             axes['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
@@ -894,8 +955,13 @@ def plot_figure(data_dir='.'):
 
     ax_leg = axes['legend']
     ax_leg.axis('off')
-    handles = [plt.Line2D([0], [0], color=COLORS[m], marker='.', linestyle='-', label=m)
-               for m in ['fMCSI', 'MATLAB', 'OASIS', 'CASCADE']]
+    _legend_labels = {
+        'fMCSI': 'fMCSI', 'MATLAB': 'MATLAB', 'OASIS': 'OASIS',
+        'CASCADE_GPU': 'CASCADE (GPU)', 'CASCADE_CPU': 'CASCADE (CPU)',
+    }
+    handles = [plt.Line2D([0], [0], color=COLORS[m], marker='.', linestyle='-',
+                          label=_legend_labels[m])
+               for m in ['fMCSI', 'MATLAB', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU']]
     ax_leg.legend(handles=handles, loc='center', frameon=False, fontsize=9)
 
     plt.tight_layout()
@@ -911,7 +977,7 @@ def plot_figure(data_dir='.'):
     for ext in ('png', 'svg'):
         out = os.path.join(data_dir, f'figure2.{ext}')
         fig.savefig(out, dpi=300, bbox_inches='tight')
-        print(f'Saved → {out}')
+        print(f'Saved -> {out}')
     plt.close(fig)
 
 

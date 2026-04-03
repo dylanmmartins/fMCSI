@@ -42,20 +42,22 @@ BETA     = 0.5
 USE_STRICT_ACCURACY = True
 
 COLORS = {
-    'fMCSI':   '#4C72B0',
-    'MATLAB':  '#DD8452',
-    'OASIS':   '#55A868',
-    'CASCADE': '#8172B3',
+    'fMCSI':       '#4C72B0',
+    'MATLAB':      '#DD8452',
+    'OASIS':       '#55A868',
+    'CASCADE_GPU': '#8172B3',
+    'CASCADE_CPU': '#B39DDB',
 }
 
 _NPZ_NAMES = {
-    'fMCSI':   'fixed_benchmark_fMCSI.npz',
-    'MATLAB':  'fixed_benchmark_MATLAB.npz',
-    'OASIS':   'fixed_benchmark_OASIS.npz',
-    'CASCADE': 'fixed_benchmark_CASCADE.npz',
+    'fMCSI':       'fixed_benchmark_fMCSI.npz',
+    'MATLAB':      'fixed_benchmark_MATLAB.npz',
+    'OASIS':       'fixed_benchmark_OASIS.npz',
+    'CASCADE_GPU': 'fixed_benchmark_CASCADE_GPU.npz',
+    'CASCADE_CPU': 'fixed_benchmark_CASCADE_CPU.npz',
 }
 
-def _run_cascade_inference(dff, fs, n_cells, data_dir, prefix='fig1_cascade'):
+def _run_cascade_inference(dff, fs, n_cells, data_dir, prefix='fig1_cascade', device='gpu'):
 
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           'run_cascade_subprocess.py')
@@ -64,12 +66,13 @@ def _run_cascade_inference(dff, fs, n_cells, data_dir, prefix='fig1_cascade'):
 
     np.savez(input_path, dff=dff.astype(np.float32), fs=np.float32(fs))
 
-    print(f"Calling CASCADE subprocess (n_cells={n_cells}, fs={fs})...")
+    print(f"Calling CASCADE subprocess (n_cells={n_cells}, fs={fs}, device={device})...")
     subprocess.run(
         ['conda', 'run', '-n', 'cascade', 'python', script,
          '--mode', 'inference',
          '--input', input_path,
-         '--output', output_path],
+         '--output', output_path,
+         '--device', device],
         check=True
     )
 
@@ -187,26 +190,25 @@ def run_test(data_dir='.', run_fmcsi=True, run_matlab=True,
         np.savez(os.path.join(data_dir, _NPZ_NAMES['OASIS']), **save)
 
     if run_cascade:
-        
-        print('\nRunning CASCADE (subprocess)...')
-        cascade_probs, cascade_spikes, cascade_time = _run_cascade_inference(
-            noisy, FS, N_CELLS, data_dir
-        )
-        cascade_prec, cascade_rec, cascade_F1 = fMCSI.compute_accuracy_strict(
-            true_spikes, cascade_spikes
-        )
-        print(f'  CASCADE took {cascade_time:.1f}s  P={np.nanmean(cascade_prec):.3f}  '
-              f'R={np.nanmean(cascade_rec):.3f}')
-        save = {
-            **shared,
-            'cascade_spikes':    np.array(cascade_spikes, dtype=object),
-            'cascade_probs':     cascade_probs,
-            'cascade_time':      cascade_time,
-            'cascade_precision': cascade_prec,
-            'cascade_recall':    cascade_rec,
-            'cascade_F1':        cascade_F1,
-        }
-        np.savez(os.path.join(data_dir, _NPZ_NAMES['CASCADE']), **save)
+
+        for _dev, _key in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
+            print(f'\nRunning CASCADE (subprocess, {_dev.upper()})...')
+            _probs, _spikes, _time = _run_cascade_inference(
+                noisy, FS, N_CELLS, data_dir,
+                prefix=f'fig1_cascade_{_dev}', device=_dev
+            )
+            _prec, _rec, _F1 = fMCSI.compute_accuracy_strict(true_spikes, _spikes)
+            print(f'  CASCADE ({_dev.upper()}) took {_time:.1f}s  '
+                  f'P={np.nanmean(_prec):.3f}  R={np.nanmean(_rec):.3f}')
+            np.savez(os.path.join(data_dir, _NPZ_NAMES[_key]), **{
+                **shared,
+                'cascade_spikes':    np.array(_spikes, dtype=object),
+                'cascade_probs':     _probs,
+                'cascade_time':      _time,
+                'cascade_precision': _prec,
+                'cascade_recall':    _rec,
+                'cascade_F1':        _F1,
+            })
 
     print('\nTest mode complete.')
 
@@ -319,11 +321,11 @@ def _plot_raster(ax, cells, window=60.0):
     cell_h = n_rows * rr + pad + th + gap
 
     method_rows = [
-        ('OASIS',        'oasis_spikes',    COLORS['OASIS'],    0),
-        ('CASCADE',      'cascade_spikes',  COLORS['CASCADE'],  1),
-        ('MATLAB',       'trad_spikes',     COLORS['MATLAB'],   2),
-        ('fMCSI',        'my_spikes',       COLORS['fMCSI'],    3),
-        ('Ground Truth', 'true_spikes',     '#111111',          4),
+        ('OASIS',        'oasis_spikes',    COLORS['OASIS'],       0),
+        ('CASCADE',       'cascade_spikes', COLORS['CASCADE_GPU'], 1),
+        ('MATLAB',       'trad_spikes',     COLORS['MATLAB'],      2),
+        ('fMCSI',        'my_spikes',       COLORS['fMCSI'],       3),
+        ('Ground Truth', 'true_spikes',     '#111111',             4),
     ]
     label_x = -4.0
 
@@ -391,33 +393,53 @@ def plot_figure(data_dir='.'):
                 f'{name} results not found at {path}. Run --mode test first.'
             )
 
-    MINE_RESULTS    = np.load(paths['fMCSI'],   allow_pickle=True)
-    MATLAB_RESULTS  = np.load(paths['MATLAB'],  allow_pickle=True)
-    OASIS_RESULTS   = np.load(paths['OASIS'],   allow_pickle=True)
-    CASCADE_RESULTS = np.load(paths['CASCADE'], allow_pickle=True)
+    MINE_RESULTS        = np.load(paths['fMCSI'],       allow_pickle=True)
+    MATLAB_RESULTS      = np.load(paths['MATLAB'],      allow_pickle=True)
+    OASIS_RESULTS       = np.load(paths['OASIS'],       allow_pickle=True)
+    CASCADE_GPU_RESULTS = np.load(paths['CASCADE_GPU'], allow_pickle=True)
+    CASCADE_CPU_RESULTS = np.load(paths['CASCADE_CPU'], allow_pickle=True)
 
     n_cells = int(MINE_RESULTS['n_cells'])
 
     if USE_STRICT_ACCURACY:
         METHOD_INFO = [
-            ('fMCSI',   MINE_RESULTS,    'optim_F1',    'optim_recall',    'optim_precision',    None, float(MINE_RESULTS['optim_time'])),
-            ('MATLAB',  MATLAB_RESULTS,  'tradmat_F1',  'tradmat_recall',  'tradmat_precision',  None, float(MATLAB_RESULTS['tradmat_time'])),
-            ('OASIS',   OASIS_RESULTS,   'oasis_F1',    'oasis_recall',    'oasis_precision',    None, float(OASIS_RESULTS['oasis_time'])),
-            ('CASCADE', CASCADE_RESULTS, 'cascade_F1',  'cascade_recall',  'cascade_precision',  None, float(CASCADE_RESULTS['cascade_time'])),
+            ('fMCSI',       MINE_RESULTS,        'optim_F1',    'optim_recall',    'optim_precision',    None, float(MINE_RESULTS['optim_time'])),
+            ('MATLAB',      MATLAB_RESULTS,      'tradmat_F1',  'tradmat_recall',  'tradmat_precision',  None, float(MATLAB_RESULTS['tradmat_time'])),
+            ('OASIS',       OASIS_RESULTS,       'oasis_F1',    'oasis_recall',    'oasis_precision',    None, float(OASIS_RESULTS['oasis_time'])),
+            ('CASCADE_GPU', CASCADE_GPU_RESULTS, 'cascade_F1',  'cascade_recall',  'cascade_precision',  None, float(CASCADE_GPU_RESULTS['cascade_time'])),
         ]
     else:
         METHOD_INFO = [
-            ('fMCSI',   MINE_RESULTS,    'optim_F1_window',    'optim_recall_window',    'optim_precision_window',    None, float(MINE_RESULTS['optim_time'])),
-            ('MATLAB',  MATLAB_RESULTS,  'tradmat_F1_window',  'tradmat_recall_window',  'tradmat_precision_window',  None, float(MATLAB_RESULTS['tradmat_time'])),
-            ('OASIS',   OASIS_RESULTS,   'oasis_F1_window',    'oasis_recall_window',    'oasis_precision_window',    None, float(OASIS_RESULTS['oasis_time'])),
-            ('CASCADE', CASCADE_RESULTS, 'cascade_F1_window',  'cascade_recall_window',  'cascade_precision_window',  None, float(CASCADE_RESULTS['cascade_time'])),
+            ('fMCSI',       MINE_RESULTS,        'optim_F1_window',    'optim_recall_window',    'optim_precision_window',    None, float(MINE_RESULTS['optim_time'])),
+            ('MATLAB',      MATLAB_RESULTS,      'tradmat_F1_window',  'tradmat_recall_window',  'tradmat_precision_window',  None, float(MATLAB_RESULTS['tradmat_time'])),
+            ('OASIS',       OASIS_RESULTS,       'oasis_F1_window',    'oasis_recall_window',    'oasis_precision_window',    None, float(OASIS_RESULTS['oasis_time'])),
+            ('CASCADE_GPU', CASCADE_GPU_RESULTS, 'cascade_F1_window',  'cascade_recall_window',  'cascade_precision_window',  None, float(CASCADE_GPU_RESULTS['cascade_time'])),
         ]
 
+    # 4-entry lists used for accuracy panels
     labels    = [name for name, *_ in METHOD_INFO]
     positions = list(range(len(labels)))
+    _display  = {
+        'fMCSI': 'fMCSI', 'MATLAB': 'MATLAB', 'OASIS': 'OASIS',
+        'CASCADE_GPU': 'CASCADE', 'CASCADE_CPU': 'CASCADE (CPU)',
+    }
+    tick_labels = [_display.get(l, l) for l in labels]
+
+    # 5-entry lists used only for speed panels (adds CASCADE_CPU)
+    speed_labels    = labels + ['CASCADE_CPU']
+    speed_positions = list(range(len(speed_labels)))
+    speed_tick_labels = [_display.get(l, l) for l in speed_labels]
+    # In the speed panels, differentiate GPU from CPU
+    speed_tick_labels[labels.index('CASCADE_GPU')] = 'CASCADE (GPU)'
+    speed_total_times = [t for *_, t in METHOD_INFO] + [float(CASCADE_CPU_RESULTS['cascade_time'])]
+    speed_tpc_means   = (
+        [total_t / n_cells for *_, total_t in METHOD_INFO]
+        + [float(CASCADE_CPU_RESULTS['cascade_time']) / n_cells]
+    )
+    speed_bar_colors  = [COLORS[n] for n in speed_labels]
 
     example_cells = _select_example_cells(
-        MINE_RESULTS, OASIS_RESULTS, CASCADE_RESULTS, MATLAB_RESULTS,
+        MINE_RESULTS, OASIS_RESULTS, CASCADE_GPU_RESULTS, MATLAB_RESULTS,
         n_cells=4, window=60.0
     )
 
@@ -458,7 +480,7 @@ def plot_figure(data_dir='.'):
         parts[partname].set_color('k')
         parts[partname].set_linewidth(0.8)
     F1_dist.set_xticks(positions)
-    F1_dist.set_xticklabels(labels, fontsize=6, rotation=20, ha='right')
+    F1_dist.set_xticklabels(tick_labels, fontsize=6, rotation=90, ha='right')
     F1_dist.set_ylabel(r'$F_\beta$ score')
     F1_dist.set_ylim([0, 1.1])
 
@@ -466,10 +488,10 @@ def plot_figure(data_dir='.'):
     true_spikes = list(MINE_RESULTS['true_spikes'])
     fs = float(MINE_RESULTS['f'])
     cosmic_spike_keys = [
-        ('fMCSI',   MINE_RESULTS,    'optim_spikes'),
-        ('MATLAB',  MATLAB_RESULTS,  'tradmat_spikes'),
-        ('OASIS',   OASIS_RESULTS,   'oasis_spikes'),
-        ('CASCADE', CASCADE_RESULTS, 'cascade_spikes'),
+        ('fMCSI',       MINE_RESULTS,        'optim_spikes'),
+        ('MATLAB',      MATLAB_RESULTS,      'tradmat_spikes'),
+        ('OASIS',       OASIS_RESULTS,       'oasis_spikes'),
+        ('CASCADE_GPU', CASCADE_GPU_RESULTS, 'cascade_spikes'),
     ]
     print('Computing CosMIC scores...')
     cosmic_arrays = []
@@ -486,15 +508,13 @@ def plot_figure(data_dir='.'):
         parts[partname].set_color('k')
         parts[partname].set_linewidth(0.8)
     cosmic_dist.set_xticks(positions)
-    cosmic_dist.set_xticklabels(labels, fontsize=6, rotation=20, ha='right')
+    cosmic_dist.set_xticklabels(tick_labels, fontsize=6, rotation=90, ha='right')
     cosmic_dist.set_ylabel('CosMIC Score')
     cosmic_dist.set_ylim([0, 1.1])
 
-    total_times = [t for *_, t in METHOD_INFO]
-    bar_colors  = [COLORS[n] for n in labels]
-    total_time.bar(positions, total_times, color=bar_colors, width=0.65)
-    total_time.set_xticks(positions)
-    total_time.set_xticklabels(labels, fontsize=5, rotation=20, ha='right')
+    total_time.bar(speed_positions, speed_total_times, color=speed_bar_colors, width=0.65)
+    total_time.set_xticks(speed_positions)
+    total_time.set_xticklabels(speed_tick_labels, fontsize=5, rotation=90, ha='right')
     total_time.set_ylabel('Total time (sec)')
     total_time.set_yscale('log')
     total_time.yaxis.set_minor_locator(ticker.LogLocator(subs='all', numticks=100))
@@ -502,19 +522,13 @@ def plot_figure(data_dir='.'):
     total_time.tick_params(axis='y', which='minor', length=4, width=0.5, colors='black')
     total_time.tick_params(axis='y', which='major', length=8, width=1,   colors='black')
 
-    tpc_means = []
-    for name, res, f1_k, rec_k, prec_k, tpc_k, total_t in METHOD_INFO:
-        if tpc_k is not None:
-            tpc_means.append(float(np.mean(np.array(res[tpc_k], dtype=float))))
-        else:
-            tpc_means.append(total_t / n_cells)
-    print(f'\n{"Method":<12} {"Total time (s)":>16} {"Time/cell (s)":>14}')
-    print('-' * 44)
-    for name, total_t, tpc in zip(labels, total_times, tpc_means):
-        print(f'{name:<12} {total_t:>16.1f} {tpc:>14.2f}')
-    time_per_cell.bar(positions, tpc_means, color=bar_colors, width=0.65)
-    time_per_cell.set_xticks(positions)
-    time_per_cell.set_xticklabels(labels, fontsize=5, rotation=20, ha='right')
+    print(f'\n{"Method":<14} {"Total time (s)":>16} {"Time/cell (s)":>14}')
+    print('-' * 46)
+    for name, total_t, tpc in zip(speed_labels, speed_total_times, speed_tpc_means):
+        print(f'{name:<14} {total_t:>16.1f} {tpc:>14.3f}')
+    time_per_cell.bar(speed_positions, speed_tpc_means, color=speed_bar_colors, width=0.65)
+    time_per_cell.set_xticks(speed_positions)
+    time_per_cell.set_xticklabels(speed_tick_labels, fontsize=5, rotation=90, ha='right')
     time_per_cell.set_ylabel('time per cell (sec)')
     time_per_cell.set_yscale('log')
     time_per_cell.yaxis.set_minor_locator(ticker.LogLocator(subs='all', numticks=100))
@@ -532,7 +546,7 @@ def plot_figure(data_dir='.'):
     for ext in ('png', 'svg'):
         out = os.path.join(data_dir, f'figure1.{ext}')
         fig.savefig(out, bbox_inches='tight')
-        print(f'Saved → {out}')
+        print(f'Saved -> {out}')
     plt.close(fig)
 
 

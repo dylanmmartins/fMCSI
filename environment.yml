@@ -8,6 +8,7 @@ dependencies:
   - scipy>=1.13
   - numba>=0.60
   - tqdm>=4.0
+  - matplotlib
   - pip
   - pip:
       - h5py>=3.9

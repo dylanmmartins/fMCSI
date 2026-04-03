@@ -18,7 +18,6 @@ import subprocess
 import sys
 import time
 import re
-import json
 import glob as _glob
 
 import numpy as np
@@ -28,7 +27,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib as mpl
 from matplotlib.lines import Line2D
-import pandas as pd
 import h5py
 from scipy.signal import butter, filtfilt, correlate, find_peaks
 from scipy.ndimage import percentile_filter, gaussian_filter1d
@@ -62,7 +60,48 @@ _GENO_LS         = {'Cux2': '-', 'Emx1': '--', 'tetO': ':'}
 _GENO_LS_DEFAULT = ':'
 
 
+def _save_records(records, path):
+
+    if not records:
+        np.savez(path)
+        return
+    keys = list(records[0].keys())
+    arrays = {}
+    for k in keys:
+        vals = [r.get(k) for r in records]
+        if all(isinstance(v, str) or v is None for v in vals):
+            arrays[k] = np.array([v if v is not None else '' for v in vals], dtype=object)
+        else:
+            try:
+                arrays[k] = np.array(vals, dtype=np.float64)
+            except (TypeError, ValueError):
+                arrays[k] = np.array([str(v) for v in vals], dtype=object)
+    np.savez(path, **arrays)
+
+
+def _load_records(path):
+
+    d = np.load(path, allow_pickle=True)
+    keys = list(d.files)
+    if not keys:
+        return []
+    n = len(d[keys[0]])
+    records = []
+    for i in range(n):
+        row = {}
+        for k in keys:
+            v = d[k][i]
+            if isinstance(v, np.ndarray) and v.ndim == 0:
+                v = v.item()
+            elif hasattr(v, 'item'):
+                v = v.item()
+            row[k] = v
+        records.append(row)
+    return records
+
+
 def _fbeta(precision, recall):
+
     p = np.asarray(precision, dtype=float)
     r = np.asarray(recall, dtype=float)
     b2 = BETA ** 2
@@ -100,6 +139,7 @@ def get_zoom_for_label(label, zoom_lookup=None):
 
 
 def save_aggregated_data(slow_data_groups, fast_data_groups, aggregated_h5_path):
+
     print(f"\nSaving aggregated data to {aggregated_h5_path}...")
     with h5py.File(aggregated_h5_path, 'w') as hf:
         for group_key, h5_group_name in [('slow', 'slow_data'), ('fast', 'fast_data')]:
@@ -123,6 +163,7 @@ def save_aggregated_data(slow_data_groups, fast_data_groups, aggregated_h5_path)
 
 
 def load_aggregated_data(aggregated_h5_path):
+
     print(f"\nLoading aggregated data from {aggregated_h5_path}...")
     slow_data_groups = {}
     fast_data_groups = {}
@@ -426,9 +467,9 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
         cosmic_oasis=cosmic_oasis,
     )
 
-    json_path = os.path.join(data_dir, f'allen_data_results_{label}.json')
-    pd.DataFrame(all_results).to_json(json_path, orient='records', indent=4)
-    print(f"  Saved results → {json_path}")
+    npz_path = os.path.join(data_dir, f'allen_data_results_{label}.npz')
+    _save_records(all_results, npz_path)
+    print(f"  Saved results -> {npz_path}")
 
     print("  Running CASCADE (subprocess)...")
     try:
@@ -479,16 +520,17 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
             cosmic_cas=cosmic_cas,
         )
 
-        cas_json_path = os.path.join(
-            data_dir, f'allen_data_results_cascade_{label}.json')
-        pd.DataFrame(cas_results).to_json(cas_json_path, orient='records', indent=4)
-        print(f"  Saved CASCADE results → {cas_json_path}")
+        cas_npz_path = os.path.join(
+            data_dir, f'allen_data_results_cascade_{label}.npz')
+        _save_records(cas_results, cas_npz_path)
+        print(f"  Saved CASCADE results -> {cas_npz_path}")
 
     except subprocess.CalledProcessError as exc:
         print(f"  WARNING: CASCADE subprocess failed for {label}: {exc}")
 
 
 def test_figure(data_dir, allen_data_dir, run_matlab=False):
+
     os.makedirs(data_dir, exist_ok=True)
     aggregated_h5 = os.path.join(data_dir, 'allen_aggregated_data.h5')
 
@@ -515,7 +557,7 @@ def test_figure(data_dir, allen_data_dir, run_matlab=False):
 
 
 def _load_and_preprocess_raw(data_dir, aggregated_h5):
-    """Load raw Allen H5 files, compute dF/F, collect spike times."""
+
     slow_data_groups = {}
     fast_data_groups = {}
 
@@ -614,12 +656,11 @@ def _build_cascade_lookup(data_dir):
         name      = os.path.basename(npz_path)
         label_raw = (name.replace('allen_data_results_cascade_', '')
                         .replace('_traces.npz', ''))
-        json_path = npz_path.replace('_traces.npz', '.json')
+        rec_npz_path = npz_path.replace('_traces.npz', '.npz')
         cell_id_to_row = {}
-        if os.path.exists(json_path):
+        if os.path.exists(rec_npz_path):
             try:
-                with open(json_path) as fh:
-                    jdata = json.load(fh)
+                jdata = _load_records(rec_npz_path)
                 seen = {}
                 for entry in jdata:
                     cid = entry['cell_id']
@@ -1238,17 +1279,17 @@ def plot_figure(data_dir):
     label_map    = {}
     file_path_map = {}
 
-    for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.json')):
+    for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
         is_cascade = 'allen_data_results_cascade_' in fpath
         try:
-            data = json.load(open(fpath))
+            data = _load_records(fpath)
         except Exception as exc:
             print(f"Warning: could not load {fpath}: {exc}")
             continue
         orig_basename = (os.path.basename(fpath)
                          .replace('allen_data_results_cascade_', '')
                          .replace('allen_data_results_', '')
-                         .replace('.json', ''))
+                         .replace('.npz', ''))
         norm_label = normalize_label(orig_basename)
         label      = clean_label(norm_label)
         label_map[label]     = norm_label
@@ -1347,7 +1388,7 @@ def plot_figure(data_dir):
     out_png = os.path.join(data_dir, 'allen_combined_figure.png')
     plt.savefig(out_svg, bbox_inches='tight')
     plt.savefig(out_png, bbox_inches='tight')
-    print(f"Saved → {out_png}")
+    print(f"Saved -> {out_png}")
     plt.close()
 
 
