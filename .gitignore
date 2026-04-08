@@ -215,3 +215,4 @@ settings.json
 *.svg
 *.npz
 *.mat
+*.h5

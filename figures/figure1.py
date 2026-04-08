@@ -26,6 +26,8 @@ import fMCSI
 from run_pnev_MCMC import run_matlab_pnevMCMC
 from simulation_helpers import generate_synthetic_data
 
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig1')
+
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
 mpl.rcParams['pdf.fonttype'] = 42
@@ -93,7 +95,7 @@ def _fbeta(precision, recall):
         return np.where(denom > 0, (1 + b2) * p * r / denom, 0.0)
 
 
-def run_test(data_dir='.', run_fmcsi=True, run_matlab=True,
+def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
              run_oasis=True, run_cascade=True):
 
     os.makedirs(data_dir, exist_ok=True)
@@ -376,7 +378,7 @@ def _plot_raster(ax, cells, window=60.0):
     ax.set_xlabel('Time (s)')
 
 
-def plot_figure(data_dir='.'):
+def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     """
     Load per-method NPZ files from data_dir and produce Figure 1.
 
@@ -557,8 +559,8 @@ if __name__ == '__main__':
     parser.add_argument('--mode', required=True, choices=['test', 'plot'],
                         help='"test" runs inference and writes NPZ files; '
                              '"plot" loads NPZ files and generates the figure')
-    parser.add_argument('--data-dir', default='.',
-                        help='Directory for reading/writing result files (default: .)')
+    parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
+                        help='Directory for reading/writing result files')
     parser.add_argument('--no-fmcsi',   action='store_true', help='Skip fMCSI')
     parser.add_argument('--no-matlab',  action='store_true', help='Skip MATLAB')
     parser.add_argument('--no-oasis',   action='store_true', help='Skip OASIS')

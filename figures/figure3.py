@@ -38,6 +38,7 @@ from oasis.functions import deconvolve
 import fMCSI
 from run_pnev_MCMC import run_matlab_pnevMCMC
 
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig3')
 
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
@@ -55,6 +56,10 @@ _MODEL_ORDER = ['fMCSI', 'MATLAB', 'CASCADE', 'OASIS']
 
 USE_STRICT_ACCURACY = False
 BETA = 0.5
+
+CASCADE_COMPARISON_NPZ  = 'cascade_7p5_vs_30hz_data.npz'
+_CASCADE_CMP_COLOR_7P5  = 'tab:red'
+_CASCADE_CMP_COLOR_30   = 'tab:cyan'
 
 _GENO_LS         = {'Cux2': '-', 'Emx1': '--', 'tetO': ':'}
 _GENO_LS_DEFAULT = ':'
@@ -235,6 +240,8 @@ def compute_roc(true_spikes, probs, fs, tolerance_s=0.1, lag_s=0.0):
         y_score.append(probs[i])
     y_true  = np.concatenate(y_true)
     y_score = np.concatenate(y_score)
+    valid = np.isfinite(y_score)
+    y_true, y_score = y_true[valid], y_score[valid]
     fpr, tpr, thresholds = roc_curve(y_true, y_score)
     return fpr, tpr, thresholds, auc(fpr, tpr)
 
@@ -321,7 +328,7 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
         'g': g_ar2, 'defg': [g_rise, g_decay],
         'TauStd': [tau_rise * fs, tau * fs], 'lam_scale': 1.0,
     }
-    optim_dict = fMCSI.run_deconv(dff, params, true_spikes=true_spikes, benchmark=True)
+    optim_dict = fMCSI.deconv(dff, params, true_spikes=true_spikes, benchmark=True)
     my_probs   = optim_dict['optim_prob']
     my_spikes  = list(optim_dict['optim_spikes'])
     time_my    = time.time() - t0
@@ -1273,6 +1280,40 @@ def _plot_roc_by_zoom_combined(ax, roc_data):
     ], loc='lower right', ncol=1)
 
 
+def _plot_cascade_comparison(ax, npz_path=CASCADE_COMPARISON_NPZ):
+    from matplotlib.patches import Patch
+
+    data      = np.load(npz_path)
+    fb_7      = data['fb_7']
+    fb_30     = data['fb_30']
+    cosmic_7  = data['cosmic_7']
+    cosmic_30 = data['cosmic_30']
+
+    pos = [1, 2, 3.15, 4.15]
+    datasets = [
+        (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
+        (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
+        (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
+        (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
+    ]
+    parts = ax.violinplot([d for d, _ in datasets], positions=pos,
+                          showmedians=True, widths=0.65)
+    for pc, (_, col) in zip(parts['bodies'], datasets):
+        pc.set_facecolor(col); pc.set_alpha(0.75)
+    for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
+        parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
+    ax.set_xticks(pos)
+    ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
+    ax.legend(handles=[
+        Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
+        Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
+    ], loc='upper right', handlelength=1.0, handleheight=0.8,
+       borderpad=0.4, labelspacing=0.2, frameon=False)
+    ax.set_ylabel('Score')
+    ax.set_ylim([0, 1.1])
+    ax.set_title('CASCADE by sample rate')
+
+
 def plot_figure(data_dir):
 
     alldata      = []
@@ -1352,36 +1393,45 @@ def plot_figure(data_dir):
     ax_rt = fig.add_subplot(gs[0:2, 0:2])
     _plot_combined_raster_trace(ax_rt, example_cells, window=60.0)
 
-    ax_strict_win_top = fig.add_subplot(gs[0, 2])
-    _plot_strict_vs_window_f1(ax_strict_win_top, alldata)
-
+    # Row 0: high-zoom precision (col 2) and low-zoom precision (col 3)
+    ax_hz_p = fig.add_subplot(gs[0, 2])
     ax_lz_p = fig.add_subplot(gs[0, 3])
-    ax_hz_r = fig.add_subplot(gs[1, 2])
-    ax_lz_r = fig.add_subplot(gs[1, 3])
+    _plot_violin_metric(ax_hz_p, alldata, taus, 'High Zoom', prec_key, 'Precision')
+    ax_hz_p.set_title('high zoom')
     _plot_violin_metric(ax_lz_p, alldata, taus, 'Low Zoom', prec_key, 'Precision')
     ax_lz_p.set_title('low zoom')
+
+    # Row 1: high-zoom recall (col 2) and low-zoom recall (col 3)
+    ax_hz_r = fig.add_subplot(gs[1, 2])
+    ax_lz_r = fig.add_subplot(gs[1, 3])
     _plot_violin_metric(ax_hz_r, alldata, taus, 'High Zoom', rec_key, 'Recall')
     ax_hz_r.set_title('high zoom')
     _plot_violin_metric(ax_lz_r, alldata, taus, 'Low Zoom', rec_key, 'Recall')
     ax_lz_r.set_title('low zoom')
 
-    ax_strict_win = fig.add_subplot(gs[2, 0])
-    _plot_strict_vs_window_f1(ax_strict_win, alldata)
+    # Row 2: Fbeta (col 0), CoSMIC (col 1), F1-by-tau violin spanning cols 2-3
+    ax_fbeta = fig.add_subplot(gs[2, 0])
+    _plot_fbeta_violin(ax_fbeta, alldata)
+
+    ax_cosmic = fig.add_subplot(gs[2, 1])
+    _plot_cosmic_violin(ax_cosmic, alldata)
 
     ax_f1 = fig.add_subplot(gs[2, 2:4])
     _plot_f1_violin(ax_f1, alldata, taus, f1_key=f1_key)
 
+    # Row 3: ROC by zoom (col 0), ROC by genotype (col 1),
+    #         strict-vs-window Fbeta (col 2), CASCADE sample-rate comparison (col 3)
     ax_roc_zoom = fig.add_subplot(gs[3, 0])
     _plot_roc_by_zoom_combined(ax_roc_zoom, roc_data)
 
     ax_roc_geno = fig.add_subplot(gs[3, 1])
     _plot_roc_all_genotypes(ax_roc_geno, roc_data)
 
-    ax_fbeta = fig.add_subplot(gs[3, 2])
-    _plot_fbeta_violin(ax_fbeta, alldata)
+    ax_strict_win = fig.add_subplot(gs[3, 2])
+    _plot_strict_vs_window_f1(ax_strict_win, alldata)
 
-    ax_cosmic = fig.add_subplot(gs[3, 3])
-    _plot_cosmic_violin(ax_cosmic, alldata)
+    ax_cascade_cmp = fig.add_subplot(gs[3, 3])
+    _plot_cascade_comparison(ax_cascade_cmp)
 
     plt.tight_layout()
     out_svg = os.path.join(data_dir, 'allen_combined_figure.svg')
@@ -1398,8 +1448,8 @@ def main():
     )
     parser.add_argument('--mode', required=True, choices=['test', 'plot'],
                         help='test: run inference; plot: make figure')
-    parser.add_argument('--data-dir', default='.',
-                        help='Directory for output data/figures (default: .)')
+    parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
+                        help='Directory for output data/figures')
     parser.add_argument('--allen-data-dir', default=None,
                         help='Path to raw Allen H5 files (required for test mode)')
     parser.add_argument('--no-matlab', action='store_true',

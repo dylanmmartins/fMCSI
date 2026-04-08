@@ -14,8 +14,7 @@ from scipy.optimize import linear_sum_assignment
 
 
 def _otsu_threshold(values):
-    """Otsu threshold for a 1-D array. Returns the midpoint between the pair of
-    adjacent sorted values that maximises inter-class variance."""
+
     x = np.sort(values)
     n = len(x)
     cum = np.cumsum(x)
@@ -112,11 +111,7 @@ def spikes_to_calcium(spikes, fs_in, fs_out, tau, snr):
 
 
 def compute_accuracy_strict(true_spikes, predicted_spikes, tolerance=0.100):
-    """
-    Using strict 1-to-1 matching via Hungarian algorithm, so punishes multiple
-    predictions for one true spike.
-    tol is in sec
-    """
+
     precisions = []
     recalls = []
     f1s = []
@@ -164,33 +159,45 @@ def compute_accuracy_strict(true_spikes, predicted_spikes, tolerance=0.100):
 
 
 def compute_cosmic(true_spikes, inferred_spikes, fs, tolerance=0.05):
+
+    from scipy.signal import fftconvolve
+
+    hw_frames = tolerance * fs
+    r = int(np.ceil(hw_frames))
+    t = np.arange(-r, r + 1, dtype=float)
+    kernel = np.maximum(0.0, 1.0 - np.abs(t) / hw_frames)
+
     scores = []
-    sigma_frames = tolerance * fs
-    
     for t_spk, i_spk in zip(true_spikes, inferred_spikes):
         t_spk = np.asarray(t_spk, dtype=float).ravel()
         i_spk = np.asarray(i_spk, dtype=float).ravel()
         if len(t_spk) == 0 and len(i_spk) == 0:
             scores.append(1.0); continue
-            
-        max_t = max(np.max(t_spk) if len(t_spk)>0 else 0, np.max(i_spk) if len(i_spk)>0 else 0)
-        duration = max_t + 1.0 + (tolerance * 5)
-        n_bins = int(duration * fs)
+
+        max_t = max(np.max(t_spk) if len(t_spk) > 0 else 0,
+                    np.max(i_spk) if len(i_spk) > 0 else 0)
+        duration = max_t + 1.0 + tolerance * 2
+        n_bins = int(np.ceil(duration * fs))
         u = np.zeros(n_bins); v = np.zeros(n_bins)
-        
-        if len(t_spk) > 0: np.add.at(u, np.clip(np.round(t_spk * fs).astype(int), 0, n_bins-1), 1.0)
-        if len(i_spk) > 0: np.add.at(v, np.clip(np.round(i_spk * fs).astype(int), 0, n_bins-1), 1.0)
-            
-        u_s = gaussian_filter1d(u, sigma_frames); v_s = gaussian_filter1d(v, sigma_frames)
-        diff = np.sum(np.abs(u_s - v_s)); total = np.sum(np.abs(u_s)) + np.sum(np.abs(v_s))
-        
-        scores.append(1.0 - (diff / total) if total > 1e-9 else 1.0)
+
+        if len(t_spk) > 0:
+            np.add.at(u, np.clip(np.round(t_spk * fs).astype(int), 0, n_bins - 1), 1.0)
+        if len(i_spk) > 0:
+            np.add.at(v, np.clip(np.round(i_spk * fs).astype(int), 0, n_bins - 1), 1.0)
+
+        u_s = fftconvolve(u, kernel, mode='same')
+        v_s = fftconvolve(v, kernel, mode='same')
+
+        intersection = np.sum(np.minimum(u_s, v_s))
+        total = np.sum(u_s) + np.sum(v_s)
+        scores.append(2.0 * intersection / total if total > 1e-9 else 1.0)
+
     return np.array(scores)
 
 
 
 def make_event_ground_truth(spike_times_s, tau_s, event_window=0.250):
-    """Convert spike times to isolated-event times per Huang et al. eLife 2021."""
+
     t = np.asarray(spike_times_s, dtype=np.float64)
     if len(t) == 0:
         return t.copy()
@@ -209,8 +216,7 @@ def make_event_ground_truth(spike_times_s, tau_s, event_window=0.250):
 
 
 def compute_accuracy_window(true_spikes, predicted_spikes, tolerance=0.100):
-    """ Window-based (non-strict) matching like Huang et al.
-    """
+
     precisions, recalls, f1s = [], [], []
     for t_spk, p_spk in zip(true_spikes, predicted_spikes):
         t_spk = np.asarray(t_spk, dtype=np.float64).flatten()

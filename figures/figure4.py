@@ -28,6 +28,7 @@ import fMCSI.helpers as helpers
 from run_pnev_MCMC import run_matlab_pnevMCMC
 from oasis.functions import deconvolve as oasis_deconv
 
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig4')
 
 mpl.rcParams['axes.spines.top']   = False
 mpl.rcParams['axes.spines.right'] = False
@@ -796,8 +797,8 @@ def main():
     )
     parser.add_argument('--mode', required=True, choices=['test', 'plot'],
                         help='test: run inference; plot: make figure')
-    parser.add_argument('--data-dir', default='.',
-                        help='Directory for output data/figures (default: .)')
+    parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
+                        help='Directory for output data/figures')
     parser.add_argument('--ground-truth-dir', default=None,
                         help='Path to CASCADE Ground_truth/ folder (test mode)')
     parser.add_argument('--method', nargs='+',
