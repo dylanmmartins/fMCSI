@@ -47,7 +47,20 @@ _METHODS = {
     'cascade_loo': {'label': 'CASCADE', 'color': '#8172B3'},
 }
 _METHOD_ORDER  = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
-_TRACE_METHODS = ['fmcsi', 'oasis', 'matlab']
+_TRACE_METHODS = ['fmcsi', 'oasis', 'matlab', 'cascade_loo']
+
+_CASCADE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'run_cascade_subprocess.py')
+
+# Pretrained CASCADE models keyed by approximate frame rate
+_CASCADE_MODELS = [
+    (7.5,  'Global_EXC_7.5Hz_smoothing200ms'),
+    (30.0, 'Global_EXC_30Hz_smoothing50ms_causalkernel'),
+]
+
+def _cascade_model_for_fs(fs):
+    """Return the pretrained CASCADE model name closest to the given frame rate."""
+    return min(_CASCADE_MODELS, key=lambda x: abs(x[0] - fs))[1]
 
 _SENSOR_ORDER = [
     'GCaMP6f', 'GCaMP6s', 'GCaMP7f', 'GCaMP8f', 'GCaMP8m', 'GCaMP8s',
@@ -303,7 +316,7 @@ def process_dataset(ds_folder, ground_truth_dir, model):
         for cell in cells:
             dff_1 = cell['fluo'][np.newaxis, :]
             try:
-                od = fMCSI.run_deconv(dff_1, params, benchmark=True)
+                od = fMCSI.deconv(dff_1, params, benchmark=True)
                 probs_list.append(od['optim_prob'][0])
                 spk = np.asarray(list(od['optim_spikes'])[0], dtype=np.float64)
                 spikes_list.append(spk[np.isfinite(spk)])
@@ -340,6 +353,38 @@ def process_dataset(ds_folder, ground_truth_dir, model):
                 probs_list.append(np.zeros(len(cell['fluo']), dtype=np.float32))
                 spikes_list.append(np.array([], dtype=np.float64))
 
+    elif model == 'cascade_loo':
+        import tempfile
+        model_name = _cascade_model_for_fs(fs)
+        print(f"  CASCADE model: {model_name}")
+        min_len = min(len(c['fluo']) for c in cells)
+        dff_2d = np.stack([c['fluo'][:min_len] for c in cells], axis=0).astype(np.float32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path  = os.path.join(tmpdir, 'cascade_in.npz')
+            out_path = os.path.join(tmpdir, 'cascade_out.npz')
+            np.savez(in_path, dff=dff_2d, fs=np.float32(fs))
+            try:
+                subprocess.run(
+                    ['conda', 'run', '-n', 'cascade', 'python', _CASCADE_SCRIPT,
+                     '--mode', 'inference',
+                     '--model', model_name,
+                     '--input',  in_path,
+                     '--output', out_path,
+                     '--device', 'gpu'],
+                    check=True,
+                )
+                cas = np.load(out_path, allow_pickle=True)
+                probs_2d_cas  = cas['cascade_probs']   # (n_cells, n_frames)
+                spikes_cas    = list(cas['cascade_spikes'])
+                for i in range(n_cells):
+                    probs_list.append(probs_2d_cas[i].astype(np.float32))
+                    spikes_list.append(np.asarray(spikes_cas[i], dtype=np.float64))
+            except subprocess.CalledProcessError as exc:
+                print(f"  WARNING: CASCADE subprocess failed: {exc}")
+                for cell in cells:
+                    probs_list.append(np.zeros(len(cell['fluo']), dtype=np.float32))
+                    spikes_list.append(np.array([], dtype=np.float64))
+
     elapsed = time.time() - t0_bench
     print(f"  Finished in {elapsed:.1f}s  ({elapsed/n_cells:.2f}s/cell)")
 
@@ -369,7 +414,7 @@ def process_dataset(ds_folder, ground_truth_dir, model):
         records.append({
             'model':            model,
             'dataset':          ds_folder,
-            'file':             cell['fname'],
+            'fname':            cell['fname'],
             'fs':               fs,
             'tau':              tau,
             'kurtosis':         cell['kurt'],
@@ -401,7 +446,7 @@ def process_dataset(ds_folder, ground_truth_dir, model):
 def test_figure(data_dir, ground_truth_dir, methods=None):
     os.makedirs(data_dir, exist_ok=True)
     if methods is None:
-        methods = ['fmcsi', 'oasis', 'matlab']
+        methods = ['fmcsi', 'oasis', 'matlab', 'cascade_loo']
 
     ds_folders = sorted(
         d for d in os.listdir(ground_truth_dir)
@@ -482,15 +527,16 @@ def _best_window_raster(raw, fs, true_spk, pred_spks_list,
     return best_t0
 
 
-def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
-                        window=30.0, min_spikes=5):
+def _load_raster_cells(data_dir, raster_cells_npz, window=30.0, min_spikes=5):
+    # Required methods — cell excluded if any are missing
+    _REQUIRED = ['fmcsi', 'oasis', 'matlab']
 
     try:
         sets = [
             set(f.replace('_traces.npz', '')
                 for f in os.listdir(_traces_dir(data_dir, m))
                 if f.endswith('_traces.npz'))
-            for m in _TRACE_METHODS
+            for m in _REQUIRED
             if os.path.isdir(_traces_dir(data_dir, m))
         ]
     except Exception:
@@ -499,6 +545,10 @@ def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
         print("  No trace directories found.")
         return []
     common_ds = sorted(sets[0].intersection(*sets[1:]))
+
+    # Check whether cascade_loo traces exist
+    cas_td       = _traces_dir(data_dir, 'cascade_loo')
+    has_cascade  = os.path.isdir(cas_td)
 
     by_sensor = {s: [] for s in RASTER_SENSORS}
     for ds in common_ds:
@@ -521,7 +571,7 @@ def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
                 continue
             pred_by_method = {}
             ok = True
-            for m in _TRACE_METHODS:
+            for m in _REQUIRED:
                 try:
                     npz_m = np.load(
                         os.path.join(_traces_dir(data_dir, m),
@@ -532,6 +582,14 @@ def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
                     ok = False; break
             if not ok:
                 continue
+            # Optionally load cascade_loo (soft — cell not excluded if missing)
+            if has_cascade:
+                cas_path = os.path.join(cas_td, f'{ds}_traces.npz')
+                try:
+                    npz_cas = np.load(cas_path, allow_pickle=False)
+                    pred_by_method['cascade_loo'] = npz_cas[f'pred_spikes_{ci}']
+                except Exception:
+                    pass
             t_start = _best_window_raster(
                 ref_npz[f'dff_{ci}'], fs, true_spk,
                 list(pred_by_method.values()), window=window)
@@ -582,33 +640,6 @@ def _load_raster_cells(data_dir, raster_cells_npz, cascade_preds_npz,
         save[f'cell_idx_{i}']    = np.int32(c['cell_idx'])
     np.savez(raster_cells_npz, **save)
     print(f'  Saved raster cell info -> {raster_cells_npz}')
-
-
-    if os.path.exists(cascade_preds_npz):
-        try:
-            cas_npz = np.load(cascade_preds_npz, allow_pickle=False)
-            fp_ok   = ('n_cells' in cas_npz
-                       and int(cas_npz['n_cells']) == len(selected))
-            if fp_ok:
-                for i, c in enumerate(selected):
-                    ds_saved = cas_npz.get(f'dataset_{i}', np.bytes_(b'')).item()
-                    if hasattr(ds_saved, 'decode'):
-                        ds_saved = ds_saved.decode()
-                    ci_saved = int(cas_npz.get(f'cell_idx_{i}', np.int32(-1)))
-                    if ds_saved != c['ds'] or ci_saved != c['cell_idx']:
-                        fp_ok = False; break
-            if fp_ok:
-                for i, c in enumerate(selected):
-                    key = f'pred_spikes_{i}'
-                    if key in cas_npz:
-                        c['pred_spikes']['cascade_loo'] = cas_npz[key]
-                print(f'  Loaded CASCADE predictions from {cascade_preds_npz}')
-            else:
-                print('  Skipping stale CASCADE predictions '
-                      '(cell selection changed).')
-        except Exception as exc:
-            print(f'  Warning: could not load CASCADE predictions: {exc}')
-
     return selected
 
 
@@ -729,42 +760,20 @@ def _draw_grouped_violins(ax, all_records, values_fn, ylabel):
     ax.tick_params(axis='both', labelsize=6)
 
 
-def plot_figure(data_dir, loo_models_dir=None):
-    raster_cells_npz  = os.path.join(data_dir, 'raster_cells.npz')
-    cascade_preds_npz = os.path.join(data_dir, 'raster_cascade_preds.npz')
+def plot_figure(data_dir):
+    raster_cells_npz = os.path.join(data_dir, 'raster_cells.npz')
 
     print('Loading results...')
     all_records = _load_all(data_dir)
     if not all_records:
-        print(f'No result JSON files found in {data_dir}. Run --mode test first.')
+        print(f'No result files found in {data_dir}. Run --mode test first.')
         return
     print(f'Loaded {sum(len(v) for v in all_records.values())} records '
           f'across {len(all_records)} methods.')
 
     print('  Loading example cells for raster...')
-    cells = _load_raster_cells(
-        data_dir, raster_cells_npz, cascade_preds_npz, window=30.0)
+    cells = _load_raster_cells(data_dir, raster_cells_npz, window=30.0)
     print(f'  Found {len(cells)} example cells.')
-
-    # Run CASCADE LOO subprocess if requested and raster_cells.npz exists
-    if loo_models_dir and os.path.exists(raster_cells_npz) \
-            and not os.path.exists(cascade_preds_npz):
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              'run_cascade_subprocess.py')
-        print('  Running CASCADE LOO predictions (subprocess)...')
-        try:
-            subprocess.run(
-                ['conda', 'run', '-n', 'cascade', 'python', script,
-                 '--mode', 'loo-predict',
-                 '--raster-cells', raster_cells_npz,
-                 '--loo-models-dir', loo_models_dir,
-                 '--output', cascade_preds_npz],
-                check=True)
-            # Reload cells now that CASCADE preds exist
-            cells = _load_raster_cells(
-                data_dir, raster_cells_npz, cascade_preds_npz, window=30.0)
-        except subprocess.CalledProcessError as exc:
-            print(f'  WARNING: CASCADE LOO subprocess failed: {exc}')
 
     fig = plt.figure(figsize=(6.0, 7.0), dpi=200)
     gs  = gridspec.GridSpec(3, 1, figure=fig,
@@ -802,11 +811,10 @@ def main():
     parser.add_argument('--ground-truth-dir', default=None,
                         help='Path to CASCADE Ground_truth/ folder (test mode)')
     parser.add_argument('--method', nargs='+',
-                        choices=['fmcsi', 'matlab', 'oasis'],
-                        default=['fmcsi', 'oasis', 'matlab'],
-                        help='Method(s) to run in test mode (default: all three)')
-    parser.add_argument('--loo-models-dir', default=None,
-                        help='CASCADE LOO models directory (plot mode, optional)')
+                        choices=['fmcsi', 'matlab', 'oasis', 'cascade_loo'],
+                        default=None,
+                        help='Method(s) to run in test mode '
+                             '(default: all four)')
     args = parser.parse_args()
 
     if args.mode == 'test':
@@ -818,10 +826,7 @@ def main():
             methods=args.method,
         )
     else:
-        plot_figure(
-            data_dir=args.data_dir,
-            loo_models_dir=args.loo_models_dir,
-        )
+        plot_figure(data_dir=args.data_dir)
 
 
 if __name__ == '__main__':

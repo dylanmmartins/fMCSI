@@ -38,6 +38,8 @@ COLORS = {
 OASIS_THRESHOLDS   = np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0])
 CASCADE_THRESHOLDS = np.array([0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0])
 
+_DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'figS1')
+
 # True  -> sweep sigma multipliers: s > thresh * sigma  (matches figure1.py / figure3.py)
 # False -> sweep fixed heights via find_peaks (same method as CASCADE)
 OASIS_SIGMA_THRESH = True
@@ -209,7 +211,7 @@ def plot_figure(data_dir='.'):
     oasis_sigma_thresh = bool(res['oasis_sigma_thresh']) if 'oasis_sigma_thresh' in res else True
     oasis_thresholds   = res['oasis_thresholds']   if 'oasis_thresholds'   in res else res['thresholds']
     cascade_thresholds = res['cascade_thresholds'] if 'cascade_thresholds' in res else res['thresholds']
-    oasis_xlabel       = 'Sigma multiplier' if oasis_sigma_thresh else 'Detection threshold'
+    # oasis_xlabel       = 'Sigma multiplier' if oasis_sigma_thresh else 'Detection threshold'
 
     metrics = [
         ('precision', 'Precision'),
@@ -220,7 +222,7 @@ def plot_figure(data_dir='.'):
 
     rows = []
     if has_oasis:
-        rows.append(('OASIS',   'oasis',   oasis_thresholds,   oasis_xlabel))
+        rows.append(('OASIS',   'oasis',   oasis_thresholds,   'Detection threshold'))
     if has_cascade:
         rows.append(('CASCADE', 'cascade', cascade_thresholds, 'Detection threshold'))
 
@@ -276,13 +278,14 @@ def plot_figure(data_dir='.'):
 
 
 if __name__ == '__main__':
+    
     parser = argparse.ArgumentParser(
         description='Figure S1: threshold sensitivity for OASIS and CASCADE'
     )
     parser.add_argument('--mode', required=True, choices=['test', 'plot'],
                         help='"test" runs inference and writes results; '
                              '"plot" loads results and generates the figure')
-    parser.add_argument('--data-dir', default='.',
+    parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
                         help='Directory for reading/writing result files (default: .)')
     parser.add_argument('--no-oasis',   action='store_true', help='Skip OASIS')
     parser.add_argument('--no-cascade', action='store_true', help='Skip CASCADE')

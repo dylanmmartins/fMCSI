@@ -162,7 +162,7 @@ def compute_cosmic(true_spikes, inferred_spikes, fs, tolerance=0.05):
 
     from scipy.signal import fftconvolve
 
-    hw_frames = tolerance * fs
+    hw_frames = max(tolerance * fs, 1.0)
     r = int(np.ceil(hw_frames))
     t = np.arange(-r, r + 1, dtype=float)
     kernel = np.maximum(0.0, 1.0 - np.abs(t) / hw_frames)

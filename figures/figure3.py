@@ -57,7 +57,7 @@ _MODEL_ORDER = ['fMCSI', 'MATLAB', 'CASCADE', 'OASIS']
 USE_STRICT_ACCURACY = False
 BETA = 0.5
 
-CASCADE_COMPARISON_NPZ  = 'cascade_7p5_vs_30hz_data.npz'
+# CASCADE_COMPARISON_NPZ  = 'cascade_7p5_vs_30hz_data.npz'
 _CASCADE_CMP_COLOR_7P5  = 'tab:red'
 _CASCADE_CMP_COLOR_30   = 'tab:cyan'
 
@@ -1280,38 +1280,38 @@ def _plot_roc_by_zoom_combined(ax, roc_data):
     ], loc='lower right', ncol=1)
 
 
-def _plot_cascade_comparison(ax, npz_path=CASCADE_COMPARISON_NPZ):
-    from matplotlib.patches import Patch
+# def _plot_cascade_comparison(ax, npz_path=CASCADE_COMPARISON_NPZ):
+#     from matplotlib.patches import Patch
 
-    data      = np.load(npz_path)
-    fb_7      = data['fb_7']
-    fb_30     = data['fb_30']
-    cosmic_7  = data['cosmic_7']
-    cosmic_30 = data['cosmic_30']
+#     data      = np.load(npz_path)
+#     fb_7      = data['fb_7']
+#     fb_30     = data['fb_30']
+#     cosmic_7  = data['cosmic_7']
+#     cosmic_30 = data['cosmic_30']
 
-    pos = [1, 2, 3.15, 4.15]
-    datasets = [
-        (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
-        (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
-        (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
-        (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
-    ]
-    parts = ax.violinplot([d for d, _ in datasets], positions=pos,
-                          showmedians=True, widths=0.65)
-    for pc, (_, col) in zip(parts['bodies'], datasets):
-        pc.set_facecolor(col); pc.set_alpha(0.75)
-    for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
-        parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
-    ax.set_xticks(pos)
-    ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
-    ax.legend(handles=[
-        Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
-        Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
-    ], loc='upper right', handlelength=1.0, handleheight=0.8,
-       borderpad=0.4, labelspacing=0.2, frameon=False)
-    ax.set_ylabel('Score')
-    ax.set_ylim([0, 1.1])
-    ax.set_title('CASCADE by sample rate')
+#     pos = [1, 2, 3.15, 4.15]
+#     datasets = [
+#         (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
+#         (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
+#         (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
+#         (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
+#     ]
+#     parts = ax.violinplot([d for d, _ in datasets], positions=pos,
+#                           showmedians=True, widths=0.65)
+#     for pc, (_, col) in zip(parts['bodies'], datasets):
+#         pc.set_facecolor(col); pc.set_alpha(0.75)
+#     for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
+#         parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
+#     ax.set_xticks(pos)
+#     ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
+#     ax.legend(handles=[
+#         Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
+#         Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
+#     ], loc='upper right', handlelength=1.0, handleheight=0.8,
+#        borderpad=0.4, labelspacing=0.2, frameon=False)
+#     ax.set_ylabel('Score')
+#     ax.set_ylim([0, 1.1])
+#     ax.set_title('CASCADE by sample rate')
 
 
 def plot_figure(data_dir):
@@ -1431,7 +1431,7 @@ def plot_figure(data_dir):
     _plot_strict_vs_window_f1(ax_strict_win, alldata)
 
     ax_cascade_cmp = fig.add_subplot(gs[3, 3])
-    _plot_cascade_comparison(ax_cascade_cmp)
+    # _plot_cascade_comparison(ax_cascade_cmp)
 
     plt.tight_layout()
     out_svg = os.path.join(data_dir, 'allen_combined_figure.svg')
@@ -1443,6 +1443,7 @@ def plot_figure(data_dir):
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description='Figure 3 — Allen data benchmark'
     )
@@ -1450,7 +1451,7 @@ def main():
                         help='test: run inference; plot: make figure')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
                         help='Directory for output data/figures')
-    parser.add_argument('--allen-data-dir', default=None,
+    parser.add_argument('--allen-data-dir', default='/home/dylan/Fast2/spike_deconv/allen_results/raw_data',
                         help='Path to raw Allen H5 files (required for test mode)')
     parser.add_argument('--no-matlab', action='store_true',
                         help='Skip traditional MCMC (Matlab) in test mode')

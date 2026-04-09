@@ -37,7 +37,7 @@ mpl.rcParams['font.size'] = 7
 np.random.seed(3)
 
 FS       = 30.0
-DURATION = 60 * 20   # seconds
+DURATION = 60 * 20
 TAU      = 1.2
 N_CELLS  = 500
 BETA     = 0.5

@@ -76,7 +76,7 @@ def mode_inference(args):
 
     t0 = time.time()
     import os
-    model_folder = os.path.join(os.path.dirname(cascade.__file__), "Pretrained_models")
+    model_folder = os.path.join(os.path.dirname(os.path.dirname(cascade.__file__)), "Pretrained_models")
     probs = cascade.predict(model_name, dff, model_folder=model_folder, verbosity=1)
     elapsed = time.time() - t0
     print(f"[cascade-subprocess] finished in {elapsed:.1f}s")
