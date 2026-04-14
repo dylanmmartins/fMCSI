@@ -379,15 +379,7 @@ def _plot_raster(ax, cells, window=60.0):
 
 
 def plot_figure(data_dir=_DEFAULT_DATA_DIR):
-    """
-    Load per-method NPZ files from data_dir and produce Figure 1.
 
-    Reads:
-        fixed_benchmark_fMCSI.npz
-        fixed_benchmark_MATLAB.npz
-        fixed_benchmark_OASIS.npz
-        fixed_benchmark_CASCADE.npz
-    """
     paths = {k: os.path.join(data_dir, v) for k, v in _NPZ_NAMES.items()}
     for name, path in paths.items():
         if not os.path.exists(path):
@@ -418,7 +410,6 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             ('CASCADE_GPU', CASCADE_GPU_RESULTS, 'cascade_F1_window',  'cascade_recall_window',  'cascade_precision_window',  None, float(CASCADE_GPU_RESULTS['cascade_time'])),
         ]
 
-    # 4-entry lists used for accuracy panels
     labels    = [name for name, *_ in METHOD_INFO]
     positions = list(range(len(labels)))
     _display  = {
@@ -427,11 +418,10 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     }
     tick_labels = [_display.get(l, l) for l in labels]
 
-    # 5-entry lists used only for speed panels (adds CASCADE_CPU)
     speed_labels    = labels + ['CASCADE_CPU']
     speed_positions = list(range(len(speed_labels)))
     speed_tick_labels = [_display.get(l, l) for l in speed_labels]
-    # In the speed panels, differentiate GPU from CPU
+
     speed_tick_labels[labels.index('CASCADE_GPU')] = 'CASCADE (GPU)'
     speed_total_times = [t for *_, t in METHOD_INFO] + [float(CASCADE_CPU_RESULTS['cascade_time'])]
     speed_tpc_means   = (
@@ -514,10 +504,11 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     cosmic_dist.set_ylabel('CosMIC Score')
     cosmic_dist.set_ylim([0, 1.1])
 
-    total_time.bar(speed_positions, speed_total_times, color=speed_bar_colors, width=0.65)
+    speed_total_minutes = [t / 60.0 for t in speed_total_times]
+    total_time.bar(speed_positions, speed_total_minutes, color=speed_bar_colors, width=0.65)
     total_time.set_xticks(speed_positions)
     total_time.set_xticklabels(speed_tick_labels, fontsize=5, rotation=90, ha='right')
-    total_time.set_ylabel('Total time (sec)')
+    total_time.set_ylabel('Total time (min)')
     total_time.set_yscale('log')
     total_time.yaxis.set_minor_locator(ticker.LogLocator(subs='all', numticks=100))
     total_time.yaxis.set_major_locator(ticker.LogLocator(numticks=100))
@@ -544,6 +535,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     time_per_spike.scatter(n_true_spikes, my_tpc, s=2, c=COLORS['fMCSI'], alpha=0.6)
     time_per_spike.set_xlabel('# true spikes')
     time_per_spike.set_ylabel('time per cell (sec)')
+    time_per_spike.set_xlim([0, 2000])
 
     for ext in ('png', 'svg'):
         out = os.path.join(data_dir, f'figure1.{ext}')
@@ -552,13 +544,87 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     plt.close(fig)
 
 
+def print_stats(data_dir=_DEFAULT_DATA_DIR):
+
+    paths = {k: os.path.join(data_dir, v) for k, v in _NPZ_NAMES.items()}
+    for name, path in paths.items():
+        if not os.path.exists(path):
+            raise FileNotFoundError(f'{name} results not found at {path}. Run --mode test first.')
+
+    MINE_RESULTS        = np.load(paths['fMCSI'],       allow_pickle=True)
+    MATLAB_RESULTS      = np.load(paths['MATLAB'],      allow_pickle=True)
+    OASIS_RESULTS       = np.load(paths['OASIS'],       allow_pickle=True)
+    CASCADE_GPU_RESULTS = np.load(paths['CASCADE_GPU'], allow_pickle=True)
+    CASCADE_CPU_RESULTS = np.load(paths['CASCADE_CPU'], allow_pickle=True)
+
+    n_cells = int(MINE_RESULTS['n_cells'])
+
+    method_entries = [
+        ('fMCSI',       MINE_RESULTS,        'optim_precision',    'optim_recall',    'optim_spikes',    float(MINE_RESULTS['optim_time'])),
+        ('MATLAB',      MATLAB_RESULTS,      'tradmat_precision',  'tradmat_recall',  'tradmat_spikes',  float(MATLAB_RESULTS['tradmat_time'])),
+        ('OASIS',       OASIS_RESULTS,       'oasis_precision',    'oasis_recall',    'oasis_spikes',    float(OASIS_RESULTS['oasis_time'])),
+        ('CASCADE_GPU', CASCADE_GPU_RESULTS, 'cascade_precision',  'cascade_recall',  'cascade_spikes',  float(CASCADE_GPU_RESULTS['cascade_time'])),
+        ('CASCADE_CPU', CASCADE_CPU_RESULTS, 'cascade_precision',  'cascade_recall',  'cascade_spikes',  float(CASCADE_CPU_RESULTS['cascade_time'])),
+    ]
+
+    from fMCSI.helpers import compute_cosmic
+    true_spikes = list(MINE_RESULTS['true_spikes'])
+    fs = float(MINE_RESULTS['f'])
+
+    print('\n' + '='*78)
+    print('FIGURE 1 STATISTICS')
+    print('='*78)
+
+    print(f'\n{"Method":<14}  {"F_beta median":>14}  {"F_beta IQR":>11}  {"CosMIC median":>14}  {"CosMIC IQR":>11}')
+    print('-'*70)
+    fb_data = {}
+    for label, res, prec_k, rec_k, spk_k, total_t in method_entries:
+        prec   = np.array(res[prec_k], dtype=float)
+        rec    = np.array(res[rec_k],  dtype=float)
+        fb     = _fbeta(prec, rec)
+        cosmic = compute_cosmic(true_spikes, list(res[spk_k]), fs)
+        fb_data[label] = fb
+        fb_med = np.nanmedian(fb);     fb_iqr = np.subtract(*np.nanpercentile(fb,     [75, 25]))
+        co_med = np.nanmedian(cosmic); co_iqr = np.subtract(*np.nanpercentile(cosmic, [75, 25]))
+        print(f'{label:<14}  {fb_med:>14.3f}  {fb_iqr:>11.3f}  '
+              f'{co_med:>14.3f}  {co_iqr:>11.3f}')
+
+    print(f'\n{"Method":<14}  {"Total time (min)":>17}  {"Time/cell (sec)":>16}')
+    print('-'*52)
+    fmcsi_total_s = None
+    for label, res, prec_k, rec_k, spk_k, total_t in method_entries:
+        if label == 'fMCSI':
+            fmcsi_total_s = total_t
+        total_min = total_t / 60.0
+        tpc_sec   = total_t / n_cells
+        print(f'{label:<14}  {total_min:>17.3f}  {tpc_sec:>16.3f}')
+
+    print(f'\n{"Method":<14}  {"% diff from fMCSI total time":>30}')
+    print('-'*50)
+    for label, res, prec_k, rec_k, spk_k, total_t in method_entries:
+        if label == 'fMCSI':
+            print(f'{label:<14}  {"(reference)":>30}')
+            continue
+        pct = (total_t - fmcsi_total_s) / total_t * 100.0
+        sign = '+' if pct >= 0 else ''
+        print(f'{label:<14}  {sign}{pct:>28.1f}%')
+
+    matlab_t = float(MATLAB_RESULTS['tradmat_time'])
+    if fmcsi_total_s and fmcsi_total_s > 0:
+        oom = np.log10(matlab_t / fmcsi_total_s)
+        print(f'\nOrder-of-magnitude difference (fMCSI vs MATLAB): {oom:.2f}  '
+              f'(MATLAB is ~{10**oom:.1f}x slower, 10^{oom:.2f})')
+
+
 if __name__ == '__main__':
+    
     parser = argparse.ArgumentParser(
         description='Figure 1: fixed benchmark on simulated data'
     )
-    parser.add_argument('--mode', required=True, choices=['test', 'plot'],
+    parser.add_argument('--mode', required=True, choices=['test', 'plot', 'print'],
                         help='"test" runs inference and writes NPZ files; '
-                             '"plot" loads NPZ files and generates the figure')
+                             '"plot" loads NPZ files and generates the figure; '
+                             '"print" prints summary statistics to terminal')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
                         help='Directory for reading/writing result files')
     parser.add_argument('--no-fmcsi',   action='store_true', help='Skip fMCSI')
@@ -575,5 +641,7 @@ if __name__ == '__main__':
             run_oasis   = not args.no_oasis,
             run_cascade = not args.no_cascade,
         )
-    else:
+    elif args.mode == 'plot':
         plot_figure(data_dir=args.data_dir)
+    else:
+        print_stats(data_dir=args.data_dir)

@@ -742,12 +742,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
     return
 
 def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
-    """Per-cell Fβ and CoSMIC distributions for CASCADE at 7.5 Hz vs 30 Hz.
 
-    Generates the same underlying spike trains, then synthesises calcium traces
-    at each frame rate so that the only variable is imaging sample rate.
-    Saves cascade_7p5_vs_30hz_data.npz with arrays fb_7, fb_30, cosmic_7, cosmic_30.
-    """
     from simulation_helpers import generate_synthetic_data
 
     n_cells  = 50

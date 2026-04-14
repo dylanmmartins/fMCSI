@@ -277,12 +277,44 @@ def plot_figure(data_dir='.'):
     plt.close(fig)
 
 
+def print_stats(data_dir=_DEFAULT_DATA_DIR):
+    """Print peak performance statistics for OASIS and CASCADE."""
+    path = os.path.join(data_dir, _NPZ_NAME)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f'Results not found at {path}. Run --mode test first.')
+    res = np.load(path, allow_pickle=True)
+
+    oasis_thresholds   = res['oasis_thresholds']   if 'oasis_thresholds'   in res else res['thresholds']
+    cascade_thresholds = res['cascade_thresholds'] if 'cascade_thresholds' in res else res['thresholds']
+
+    rows = []
+    if 'oasis_fbeta' in res:
+        rows.append(('OASIS',   'oasis',   oasis_thresholds))
+    if 'cascade_fbeta' in res:
+        rows.append(('CASCADE', 'cascade', cascade_thresholds))
+
+    print('\n' + '='*72)
+    print('FIGURE S1 STATISTICS — maximum performance vs detection threshold')
+    print('='*72)
+
+    for method, prefix, thresholds in rows:
+        print(f'\n--- {method} ---')
+        for metric_key, metric_label in [('fbeta', 'F_beta'), ('cosmic', 'CosMIC')]:
+            arr  = res[f'{prefix}_{metric_key}']           # shape (n_thresh, n_cells)
+            mean = np.nanmean(arr, axis=1)                 # shape (n_thresh,)
+            std  = np.nanstd(arr,  axis=1)
+            best_idx = int(np.argmax(mean))
+            print(f'  Max mean {metric_label:>8}: {mean[best_idx]:.3f}  '
+                  f'(std={std[best_idx]:.3f})  '
+                  f'at threshold={thresholds[best_idx]:.3f}')
+
+
 if __name__ == '__main__':
-    
+
     parser = argparse.ArgumentParser(
         description='Figure S1: threshold sensitivity for OASIS and CASCADE'
     )
-    parser.add_argument('--mode', required=True, choices=['test', 'plot'],
+    parser.add_argument('--mode', required=True, choices=['test', 'plot', 'print'],
                         help='"test" runs inference and writes results; '
                              '"plot" loads results and generates the figure')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
@@ -297,5 +329,7 @@ if __name__ == '__main__':
             run_oasis   = not args.no_oasis,
             run_cascade = not args.no_cascade,
         )
-    else:
+    elif args.mode == 'plot':
         plot_figure(data_dir=args.data_dir)
+    else:
+        print_stats(data_dir=args.data_dir)

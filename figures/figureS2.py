@@ -29,7 +29,7 @@ _METHODS = {
 _METHOD_ORDER  = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
 _TRACE_METHODS = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
 
-SENSORS = ['GCaMP7f', 'GCaMP8s', 'GCaMP8m', 'GCaMP8f']
+SENSORS = ['GCaMP8m', 'GCaMP8f']
 
 RASTER_WINDOW   = 30.0
 ROWS_PER_SENSOR = 3

@@ -27,10 +27,36 @@ import numpy as np
 from scipy.signal import find_peaks
 
 # Device selection must happen before TF/Keras are imported.
+_device_arg = 'gpu'
 if '--device' in sys.argv:
     _dev_idx = sys.argv.index('--device')
-    if _dev_idx + 1 < len(sys.argv) and sys.argv[_dev_idx + 1] == 'cpu':
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    if _dev_idx + 1 < len(sys.argv):
+        _device_arg = sys.argv[_dev_idx + 1]
+
+if _device_arg == 'cpu':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+else:
+    # Remove any inherited override that could hide the GPU from TF.
+    # CUDA_VISIBLE_DEVICES='' or 'NoDevFiles' are also GPU-disabling values,
+    # so pop unconditionally rather than only checking for '-1'.
+    os.environ.pop('CUDA_VISIBLE_DEVICES', None)
+    # Allow incremental GPU memory growth instead of pre-allocating all VRAM.
+    # TF reads this at import time — must be set before any keras/TF import.
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+    # Configure GPU and report what TF/Keras actually sees before Keras imports initialize it.
+    try:
+        import tensorflow as tf
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            for _gpu in gpus:
+                tf.config.experimental.set_memory_growth(_gpu, True)
+            print(f"[cascade-subprocess] GPU(s) visible: {[g.name for g in gpus]}")
+        else:
+            print("[cascade-subprocess] WARNING: no GPU visible to TensorFlow — "
+                  "running on CPU. If GPU was intended, check CUDA/driver install.")
+    except Exception as _gpu_exc:
+        print(f"[cascade-subprocess] Could not configure GPU: {_gpu_exc}")
 
 try:
     import keras.engine.input_layer as _kil

@@ -57,7 +57,6 @@ _MODEL_ORDER = ['fMCSI', 'MATLAB', 'CASCADE', 'OASIS']
 USE_STRICT_ACCURACY = False
 BETA = 0.5
 
-# CASCADE_COMPARISON_NPZ  = 'cascade_7p5_vs_30hz_data.npz'
 _CASCADE_CMP_COLOR_7P5  = 'tab:red'
 _CASCADE_CMP_COLOR_30   = 'tab:cyan'
 
@@ -334,10 +333,12 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
     time_my    = time.time() - t0
 
     lag_my           = diagnose_time_shift(true_spikes, my_probs, fs)
+    my_spikes_shifted, _ = fMCSI.detect_spikes_from_probs(
+        my_probs, fs, lag_s=lag_my, sigma=1.5)
     prec_my, rec_my, f1_my           = fMCSI.compute_accuracy_strict(true_spikes, my_spikes, tolerance=0.1)
     prec_my_w, rec_my_w, f1_my_w     = compute_accuracy_window(true_spikes, my_spikes, tolerance=0.1)
     prec_my_e, rec_my_e, f1_my_e     = compute_accuracy_window(true_events,  my_spikes, tolerance=0.1)
-    cosmic_my                         = fMCSI.helpers.compute_cosmic(true_spikes, my_spikes, fs)
+    cosmic_my                         = fMCSI.helpers.compute_cosmic(true_spikes, my_spikes_shifted, fs)
     fpr_my, tpr_my, thresh_my, auc_my = compute_roc(true_spikes, my_probs, fs, lag_s=lag_my)
     fpr_my_ev, tpr_my_ev, _, auc_my_ev = compute_roc(true_events, my_probs, fs, lag_s=lag_my)
 
@@ -536,6 +537,144 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
         print(f"  WARNING: CASCADE subprocess failed for {label}: {exc}")
 
 
+def _run_and_save_fmcsi_group(dff, true_spikes, fs, tau, label, data_dir):
+
+    n_cells = dff.shape[0]
+
+    cell_kurtosis = fMCSI.helpers.compute_kurtosis(dff)
+    kurtosis_threshold = 0.5
+    good_mask = cell_kurtosis >= kurtosis_threshold
+    good_idx  = np.where(good_mask)[0]
+    n_good    = len(good_idx)
+    print(f"  Kurtosis filter: {n_good}/{n_cells} cells pass "
+          f"(excess kurtosis >= {kurtosis_threshold})")
+
+    dff         = dff[good_idx]
+    true_spikes = [true_spikes[i] for i in good_idx]
+    n_cells     = n_good
+
+    if n_cells == 0:
+        print(f"  WARNING: No cells pass kurtosis filter for {label}, skipping.")
+        return
+
+    true_events = [fMCSI.helpers.make_event_ground_truth(sp, tau)
+                   for sp in true_spikes]
+
+    print("  Running fMCSI...")
+    t0       = time.time()
+    tau_rise = 0.05
+    g_rise   = float(np.exp(-1.0 / (tau_rise * fs)))
+    g_decay  = float(np.exp(-1.0 / (tau * fs)))
+    g_ar2    = [g_rise + g_decay, -g_rise * g_decay]
+    params   = {
+        'f': fs, 'p': 2, 'Nsamples': 200, 'B': 75, 'marg': 0, 'upd_gam': 1,
+        'g': g_ar2, 'defg': [g_rise, g_decay],
+        'TauStd': [tau_rise * fs, tau * fs], 'lam_scale': 1.0,
+    }
+    optim_dict = fMCSI.deconv(dff, params, true_spikes=true_spikes, benchmark=True)
+    my_probs   = optim_dict['optim_prob']
+    my_spikes  = list(optim_dict['optim_spikes'])
+    time_my    = time.time() - t0
+
+    lag_my               = diagnose_time_shift(true_spikes, my_probs, fs)
+    my_spikes_shifted, _ = fMCSI.detect_spikes_from_probs(
+        my_probs, fs, lag_s=lag_my, sigma=1.5)
+    prec_my, rec_my, f1_my         = fMCSI.compute_accuracy_strict(
+        true_spikes, my_spikes, tolerance=0.1)
+    prec_my_w, rec_my_w, f1_my_w   = compute_accuracy_window(
+        true_spikes, my_spikes, tolerance=0.1)
+    prec_my_e, rec_my_e, f1_my_e   = compute_accuracy_window(
+        true_events, my_spikes, tolerance=0.1)
+    cosmic_my                       = fMCSI.helpers.compute_cosmic(
+        true_spikes, my_spikes_shifted, fs)
+    fpr_my, tpr_my, thresh_my, auc_my       = compute_roc(
+        true_spikes, my_probs, fs, lag_s=lag_my)
+    fpr_my_ev, tpr_my_ev, _, auc_my_ev      = compute_roc(
+        true_events, my_probs, fs, lag_s=lag_my)
+
+    print(f"    [fMCSI] lag={lag_my*1000:.1f}ms  "
+          f"strict F1={np.mean(f1_my):.3f}  window F1={np.mean(f1_my_w):.3f}")
+
+    all_results = []
+    for i in range(n_cells):
+        all_results.append({
+            'model': 'fMCSI', 'tau': tau, 'cell_id': int(good_idx[i]),
+            'time': time_my / n_cells,
+            'f1': f1_my[i], 'precision': prec_my[i], 'recall': rec_my[i],
+            'f1_window': f1_my_w[i], 'precision_window': prec_my_w[i],
+            'recall_window': rec_my_w[i],
+            'f1_event': f1_my_e[i], 'precision_event': prec_my_e[i],
+            'recall_event': rec_my_e[i],
+            'cosmic': cosmic_my[i], 'auc': auc_my, 'lag': lag_my,
+        })
+
+    print("  Running OASIS...")
+    t0 = time.time()
+    diff   = np.diff(dff, axis=1)
+    sigmas = np.median(np.abs(diff), axis=1) / (0.6745 * np.sqrt(2))
+    sigmas = np.maximum(sigmas, 1e-9)
+    oasis_probs  = []
+    for i in range(dff.shape[0]):
+        g = np.exp(-1 / (fs * tau))
+        _, s, _, _, _ = deconvolve(dff[i], g=(g,), sn=sigmas[i], penalty=1)
+        oasis_probs.append(s)
+    oasis_probs = np.array(oasis_probs)
+    time_oasis  = time.time() - t0
+
+    lag_oasis = diagnose_time_shift(true_spikes, oasis_probs, fs)
+    oasis_spikes_shifted, _ = fMCSI.detect_spikes_from_probs(
+        oasis_probs, fs, lag_s=lag_oasis, sigma=0.5)
+    prec_oasis, rec_oasis, f1_oasis       = fMCSI.compute_accuracy_strict(
+        true_spikes, oasis_spikes_shifted, tolerance=0.1)
+    prec_oasis_w, rec_oasis_w, f1_oasis_w = compute_accuracy_window(
+        true_spikes, oasis_spikes_shifted, tolerance=0.1)
+    prec_oasis_e, rec_oasis_e, f1_oasis_e = compute_accuracy_window(
+        true_events, oasis_spikes_shifted, tolerance=0.1)
+    cosmic_oasis                           = fMCSI.helpers.compute_cosmic(
+        true_spikes, oasis_spikes_shifted, fs)
+    fpr_oasis, tpr_oasis, thresh_oasis, auc_oasis = compute_roc(
+        true_spikes, oasis_probs, fs, lag_s=lag_oasis)
+    fpr_oasis_ev, tpr_oasis_ev, _, auc_oasis_ev   = compute_roc(
+        true_events, oasis_probs, fs, lag_s=lag_oasis)
+
+    print(f"    [OASIS] lag={lag_oasis*1000:.1f}ms  "
+          f"strict F1={np.mean(f1_oasis):.3f}  window F1={np.mean(f1_oasis_w):.3f}")
+    for i in range(n_cells):
+        all_results.append({
+            'model': 'OASIS', 'tau': tau, 'cell_id': int(good_idx[i]),
+            'time': time_oasis / n_cells,
+            'f1': f1_oasis[i], 'precision': prec_oasis[i], 'recall': rec_oasis[i],
+            'f1_window': f1_oasis_w[i], 'precision_window': prec_oasis_w[i],
+            'recall_window': rec_oasis_w[i],
+            'f1_event': f1_oasis_e[i], 'precision_event': prec_oasis_e[i],
+            'recall_event': rec_oasis_e[i],
+            'cosmic': cosmic_oasis[i], 'auc': auc_oasis, 'lag': lag_oasis,
+        })
+
+    traces_path = os.path.join(data_dir, f'allen_data_results_fmcsi_{label}_traces.npz')
+    np.savez(
+        traces_path,
+        dff=dff, true_spikes=np.array(true_spikes, dtype=object),
+        my_probs=my_probs, my_spikes=np.array(my_spikes, dtype=object),
+        oasis_probs=oasis_probs,
+        oasis_spikes=np.array(oasis_spikes_shifted, dtype=object),
+        fs=fs, tau=tau,
+        fpr_my=fpr_my, tpr_my=tpr_my, thresh_my=thresh_my, auc_my=auc_my,
+        fpr_my_event=fpr_my_ev, tpr_my_event=tpr_my_ev, auc_my_event=auc_my_ev,
+        cosmic_my=cosmic_my,
+        fpr_oasis=fpr_oasis, tpr_oasis=tpr_oasis,
+        thresh_oasis=thresh_oasis, auc_oasis=auc_oasis,
+        fpr_oasis_event=fpr_oasis_ev, tpr_oasis_event=tpr_oasis_ev,
+        auc_oasis_event=auc_oasis_ev,
+        cosmic_oasis=cosmic_oasis,
+    )
+    print(f"  Saved fMCSI+OASIS traces -> {traces_path}")
+
+    npz_path = os.path.join(data_dir, f'allen_data_results_fmcsi_{label}.npz')
+    _save_records(all_results, npz_path)
+    print(f"  Saved fMCSI+OASIS results -> {npz_path}")
+
+
 def test_figure(data_dir, allen_data_dir, run_matlab=False):
 
     os.makedirs(data_dir, exist_ok=True)
@@ -561,6 +700,33 @@ def test_figure(data_dir, allen_data_dir, run_matlab=False):
             _run_and_save_allen_group(
                 gd['dff'], gd['spikes_list'], gd['fs'], gd['tau'],
                 label, data_dir, run_matlab=run_matlab)
+
+
+def test_fmcsi(data_dir, allen_data_dir):
+
+    os.makedirs(data_dir, exist_ok=True)
+    aggregated_h5 = os.path.join(data_dir, 'allen_aggregated_data.h5')
+
+    if os.path.exists(aggregated_h5):
+        print(f"Loading preprocessed data from {aggregated_h5}")
+        slow_data_groups, fast_data_groups = load_aggregated_data(aggregated_h5)
+    else:
+        print(f"Preprocessing raw data from {allen_data_dir}")
+        slow_data_groups, fast_data_groups = _load_and_preprocess_raw(
+            allen_data_dir, aggregated_h5)
+
+    for indicator, data_groups in [('slow', slow_data_groups),
+                                   ('fast', fast_data_groups)]:
+        if not data_groups:
+            continue
+        print(f"\n--- Processing {indicator.upper()} cell groups (fMCSI only) ---")
+        for (experiment_name, fs_rounded, n_frames), gd in data_groups.items():
+            print(f"\n  Group {experiment_name}  {n_frames} frames @ {fs_rounded}Hz "
+                  f"({gd['dff'].shape[0]} cells)")
+            label = f"{experiment_name}_{indicator}_tau_{n_frames}frames_{fs_rounded}hz"
+            _run_and_save_fmcsi_group(
+                gd['dff'], gd['spikes_list'], gd['fs'], gd['tau'],
+                label, data_dir)
 
 
 def _load_and_preprocess_raw(data_dir, aggregated_h5):
@@ -656,7 +822,7 @@ def _load_and_preprocess_raw(data_dir, aggregated_h5):
 
 
 def _build_cascade_lookup(data_dir):
-    """label_raw -> (npz_path, cell_id_to_row) for CASCADE trace NPZ files."""
+
     lookup = {}
     for npz_path in _glob.glob(
             os.path.join(data_dir, 'allen_data_results_cascade_*_traces.npz')):
@@ -677,6 +843,36 @@ def _build_cascade_lookup(data_dir):
             except Exception:
                 pass
         lookup[label_raw] = (npz_path, cell_id_to_row)
+    return lookup
+
+
+def _build_fmcsi_records_lookup(data_dir):
+
+    lookup = {}
+    for fpath in _glob.glob(
+            os.path.join(data_dir, 'allen_data_results_fmcsi_*.npz')):
+        name = os.path.basename(fpath)
+        if '_traces.npz' in name:
+            continue
+        orig = name.replace('allen_data_results_fmcsi_', '').replace('.npz', '')
+        group = os.path.join(data_dir, f'allen_data_results_{orig}.npz')
+        if not os.path.exists(group) or \
+                os.path.getmtime(fpath) > os.path.getmtime(group):
+            lookup[orig] = fpath
+    return lookup
+
+
+def _build_fmcsi_traces_lookup(data_dir):
+
+    lookup = {}
+    for fpath in _glob.glob(
+            os.path.join(data_dir, 'allen_data_results_fmcsi_*_traces.npz')):
+        name = os.path.basename(fpath)
+        orig = name.replace('allen_data_results_fmcsi_', '').replace('_traces.npz', '')
+        group = os.path.join(data_dir, f'allen_data_results_{orig}_traces.npz')
+        if not os.path.exists(group) or \
+                os.path.getmtime(fpath) > os.path.getmtime(group):
+            lookup[orig] = fpath
     return lookup
 
 
@@ -728,7 +924,8 @@ def _best_window(raw_trace, fs, true_spk, det_spikes_list,
 
 def _load_raster_trace_data(data_dir, label_map, file_path_map,
                              cascade_lookup, n_cells=5,
-                             window=60.0, min_spikes=15):
+                             window=60.0, min_spikes=15,
+                             fmcsi_traces_lookup=None):
     all_cells = []
     for label, norm_label in label_map.items():
         file_label = file_path_map.get(label, norm_label)
@@ -737,12 +934,32 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
             continue
         try:
             d = np.load(fpath, allow_pickle=True)
-            if 'true_spikes' not in d or 'my_probs' not in d:
+            if 'true_spikes' not in d:
                 continue
+
+            df = None
+            if fmcsi_traces_lookup and file_label in fmcsi_traces_lookup:
+                try:
+                    df = np.load(fmcsi_traces_lookup[file_label], allow_pickle=True)
+                except Exception:
+                    df = None
+
+            if df is not None and 'my_probs' in df:
+                my_probs = df['my_probs']
+            elif 'my_probs' in d:
+                my_probs = d['my_probs']
+            else:
+                continue
+
             true_spikes_arr = list(d['true_spikes'])
-            my_probs        = d['my_probs']
-            trad_probs      = d['trad_probs']  if 'trad_probs'  in d else None
-            oasis_probs     = d['oasis_probs'] if 'oasis_probs' in d else None
+            trad_probs  = d['trad_probs'] if 'trad_probs' in d else None
+
+            if df is not None and 'oasis_probs' in df:
+                oasis_probs = df['oasis_probs']
+            elif 'oasis_probs' in d:
+                oasis_probs = d['oasis_probs']
+            else:
+                oasis_probs = None
             fs_m = re.search(r'(\d+)[Hh]z', os.path.basename(fpath))
             fs   = float(fs_m.group(1)) if fs_m else 30.0
             raw  = None
@@ -752,7 +969,6 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
             if my_probs.ndim != 2 or raw is None:
                 continue
 
-            # Try to load CASCADE traces using the lookup keyed by file_label
             dc = cas_probs_all = None
             cas_cell_id_to_row = {}
             if file_label in cascade_lookup:
@@ -764,9 +980,9 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
                 except Exception:
                     dc = None
 
-            def _load_spk(key, probs_arr, idx):
-                if key in d:
-                    arr = list(d[key])
+            def _load_spk(key, probs_arr, idx, src=d):
+                if key in src:
+                    arr = list(src[key])
                     if idx < len(arr):
                         return np.atleast_1d(np.asarray(arr[idx], dtype=float))
                 if probs_arr is not None and probs_arr.ndim == 2 \
@@ -774,6 +990,7 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
                     return _peaks_from_prob(probs_arr[idx], fs)
                 return np.array([])
 
+            fmcsi_src = df if df is not None else d
             n = my_probs.shape[0]
             for i in range(min(n, len(true_spikes_arr))):
                 raw_trace = raw[i]
@@ -781,7 +998,7 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
                 spk       = np.atleast_1d(np.asarray(true_spikes_arr[i], dtype=float))
                 if len(spk) < 3:
                     continue
-                my_spk    = _load_spk('my_spikes',    my_probs,    i)
+                my_spk    = _load_spk('my_spikes',    my_probs,    i, src=fmcsi_src)
                 trad_spk  = _load_spk('trad_spikes',  trad_probs,  i)
                 oasis_spk = _load_spk('oasis_spikes', oasis_probs, i)
                 cas_spk   = np.array([])
@@ -847,6 +1064,7 @@ def _load_raster_trace_data(data_dir, label_map, file_path_map,
 
 def _compute_roc_peak_detection(true_spikes, probs, fs, tolerance_s=0.1,
                                  n_thresholds=50):
+    
     n_cells, n_frames  = probs.shape
     tolerance_frames   = max(1, int(np.round(tolerance_s * fs)))
     min_peak_dist      = tolerance_frames
@@ -908,7 +1126,9 @@ def _compute_roc_peak_detection(true_spikes, probs, fs, tolerance_s=0.1,
 
 
 def _get_roc_data(unique_labels, label_tau_map, label_geno_map,
-                  data_dir, cascade_lookup, file_path_map):
+                  data_dir, cascade_lookup, file_path_map,
+                  fmcsi_traces_lookup=None):
+    
     def _parse_fs(label):
         m = re.search(r'[_-](\d+)[Hh]z', label)
         return float(m.group(1)) if m else (158.0 if 'highzoom' in label else 30.0)
@@ -926,44 +1146,86 @@ def _get_roc_data(unique_labels, label_tau_map, label_geno_map,
         file_label = file_path_map.get(label, label)
         fpath_main = os.path.join(data_dir,
                                   f'allen_data_results_{file_label}_traces.npz')
+
+        df = None
+        if fmcsi_traces_lookup and file_label in fmcsi_traces_lookup:
+            try:
+                df = np.load(fmcsi_traces_lookup[file_label], allow_pickle=True)
+            except Exception:
+                df = None
+
         if os.path.exists(fpath_main):
             try:
                 d = np.load(fpath_main, allow_pickle=True)
                 if 'fs'  in d: fs    = float(d['fs'])
                 if 'tau' in d: tau_s = float(d['tau'])
 
-                def _extract(name, key_prefix, prob_key):
-                    if prob_key in d and 'true_spikes' in d:
-                        probs    = d[prob_key]
-                        true_spk = list(d['true_spikes'])
+                def _extract(name, key_prefix, prob_key, src=d):
+
+                    fpr_k = f'fpr_{key_prefix}'; tpr_k = f'tpr_{key_prefix}'
+                    if fpr_k in src and tpr_k in src:
+                        fpr = src[fpr_k]; tpr = src[tpr_k]
+                        auc_k   = f'auc_{key_prefix}'
+                        roc_auc = float(src[auc_k]) if auc_k in src else np.nan
+                        if np.ndim(fpr) > 0 and len(fpr) > 1:
+                            entry['methods'][name] = (fpr, tpr, roc_auc)
+                            return
+                    if prob_key in src and 'true_spikes' in src:
+                        probs    = src[prob_key]
+                        true_spk = list(src['true_spikes'])
                         if probs.ndim == 2 and len(true_spk) == probs.shape[0]:
                             try:
                                 fpr, tpr, roc_auc = _compute_roc_peak_detection(
                                     true_spk, probs, fs)
                                 entry['methods'][name] = (fpr, tpr, roc_auc)
-                                return
                             except Exception:
                                 pass
-                    fpr_k = f'fpr_{key_prefix}'; tpr_k = f'tpr_{key_prefix}'
-                    if fpr_k in d and tpr_k in d:
-                        fpr = d[fpr_k]; tpr = d[tpr_k]
-                        auc_k   = f'auc_{key_prefix}'
-                        roc_auc = float(d[auc_k]) if auc_k in d else np.nan
-                        if np.ndim(fpr) > 0 and len(fpr) > 1:
-                            entry['methods'][name] = (fpr, tpr, roc_auc)
 
-                _extract('fMCSI', 'my',    'my_probs')
-                _extract('MATLAB', 'trad',  'trad_probs')
-                _extract('OASIS',     'oasis', 'oasis_probs')
+                _extract('fMCSI', 'my',    'my_probs',
+                         src=df if df is not None else d)
+                _extract('OASIS', 'oasis', 'oasis_probs',
+                         src=df if df is not None and 'oasis_probs' in df else d)
+                _extract('MATLAB', 'trad', 'trad_probs')
             except Exception as exc:
                 print(f"Error loading {fpath_main}: {exc}")
+        elif df is not None:
+
+            try:
+                if 'fs' in df: fs = float(df['fs'])
+
+                def _extract_fmcsi(src):
+                    for fpr_k, tpr_k, auc_k in [('fpr_my', 'tpr_my', 'auc_my')]:
+                        if fpr_k in src and tpr_k in src:
+                            fpr = src[fpr_k]; tpr = src[tpr_k]
+                            roc_auc = float(src[auc_k]) if auc_k in src else np.nan
+                            if np.ndim(fpr) > 0 and len(fpr) > 1:
+                                entry['methods']['fMCSI'] = (fpr, tpr, roc_auc)
+                                return
+                    if 'my_probs' in src and 'true_spikes' in src:
+                        probs    = src['my_probs']
+                        true_spk = list(src['true_spikes'])
+                        if probs.ndim == 2 and len(true_spk) == probs.shape[0]:
+                            try:
+                                fpr, tpr, roc_auc = _compute_roc_peak_detection(
+                                    true_spk, probs, fs)
+                                entry['methods']['fMCSI'] = (fpr, tpr, roc_auc)
+                            except Exception:
+                                pass
+                _extract_fmcsi(df)
+            except Exception as exc:
+                print(f"Error loading fmcsi traces {fmcsi_traces_lookup[file_label]}: {exc}")
 
         if file_label in cascade_lookup:
             fpath_cas, _ = cascade_lookup[file_label]
             try:
                 d = np.load(fpath_cas, allow_pickle=True)
-                loaded = False
-                if 'cascade_probs' in d and 'true_spikes' in d:
+
+                if 'fpr_cas' in d and 'tpr_cas' in d:
+                    fpr = d['fpr_cas']; tpr = d['tpr_cas']
+                    roc_auc = float(d['auc_cas']) if 'auc_cas' in d else np.nan
+                    if np.ndim(fpr) > 0 and len(fpr) > 1:
+                        entry['methods']['CASCADE'] = (fpr, tpr, roc_auc)
+                elif 'cascade_probs' in d and 'true_spikes' in d:
                     probs    = d['cascade_probs']
                     true_spk = list(d['true_spikes'])
                     if probs.ndim == 2 and len(true_spk) == probs.shape[0]:
@@ -971,14 +1233,8 @@ def _get_roc_data(unique_labels, label_tau_map, label_geno_map,
                             fpr, tpr, roc_auc = _compute_roc_peak_detection(
                                 true_spk, probs, fs)
                             entry['methods']['CASCADE'] = (fpr, tpr, roc_auc)
-                            loaded = True
                         except Exception:
                             pass
-                if not loaded and 'fpr_cas' in d and 'tpr_cas' in d:
-                    fpr = d['fpr_cas']; tpr = d['tpr_cas']
-                    roc_auc = float(d['auc_cas']) if 'auc_cas' in d else np.nan
-                    if np.ndim(fpr) > 0 and len(fpr) > 1:
-                        entry['methods']['CASCADE'] = (fpr, tpr, roc_auc)
             except Exception as exc:
                 print(f"Error loading CASCADE NPZ {fpath_cas}: {exc}")
 
@@ -988,6 +1244,7 @@ def _get_roc_data(unique_labels, label_tau_map, label_geno_map,
 
 
 def _plot_combined_raster_trace(ax, cells, window=60.0):
+
     n = len(cells)
     if n == 0:
         ax.text(0.5, 0.5, 'No trace data', transform=ax.transAxes,
@@ -1046,6 +1303,7 @@ def _plot_combined_raster_trace(ax, cells, window=60.0):
 
 
 def _plot_violin_metric(ax, alldata, taus, zoom, metric, ylabel):
+
     positions, violin_data, violin_colors = [], [], []
     x_pos = 0; tau_ticks, tau_labels = [], []
     for tau_val in taus:
@@ -1079,6 +1337,7 @@ def _plot_violin_metric(ax, alldata, taus, zoom, metric, ylabel):
 
 
 def _plot_f1_violin(ax, alldata, taus, f1_key='f1'):
+
     positions, violin_data, violin_colors = [], [], []
     x_pos = 0; group_ticks, group_labels = [], []
     for tau_val in taus:
@@ -1116,6 +1375,7 @@ def _plot_f1_violin(ax, alldata, taus, f1_key='f1'):
 
 
 def _plot_strict_vs_window_f1(ax, alldata):
+
     positions, violin_data, violin_colors = [], [], []
     tick_positions, tick_labels = [], []
     x_pos = 0
@@ -1147,6 +1407,7 @@ def _plot_strict_vs_window_f1(ax, alldata):
 
 
 def _plot_fbeta_violin(ax, alldata):
+
     fb_key = 'fbeta' if USE_STRICT_ACCURACY else 'fbeta_window'
     positions, violin_data, violin_colors, tick_labels = [], [], [], []
     for i, model_name in enumerate(_MODEL_ORDER):
@@ -1172,6 +1433,7 @@ def _plot_fbeta_violin(ax, alldata):
 
 
 def _plot_cosmic_violin(ax, alldata):
+
     positions, violin_data, violin_colors, tick_labels = [], [], [], []
     for i, model_name in enumerate(_MODEL_ORDER):
         md   = [d for d in alldata if d['model'] == model_name]
@@ -1196,6 +1458,7 @@ def _plot_cosmic_violin(ax, alldata):
 
 
 def _plot_roc_on_ax(ax, roc_entries, title, show_legend=True):
+
     mean_fpr = np.linspace(0, 1, 100)
     for model_name, color in model_colors.items():
         tprs, aucs = [], []
@@ -1225,6 +1488,7 @@ def _plot_roc_on_ax(ax, roc_entries, title, show_legend=True):
 
 
 def _plot_roc_all_genotypes(ax, roc_data):
+
     mean_fpr  = np.linspace(0, 1, 100)
     genotypes = sorted(set(e['genotype'] for e in roc_data))
     for geno in genotypes:
@@ -1254,6 +1518,7 @@ def _plot_roc_all_genotypes(ax, roc_data):
 
 
 def _plot_roc_by_zoom_combined(ax, roc_data):
+
     mean_fpr = np.linspace(0, 1, 100)
     zoom_ls  = {'High Zoom': '-', 'Low Zoom': '--'}
     for zoom, ls in zoom_ls.items():
@@ -1279,55 +1544,207 @@ def _plot_roc_by_zoom_combined(ax, roc_data):
         Line2D([0], [0], color='k', lw=1.0, ls='--', label='low zoom'),
     ], loc='lower right', ncol=1)
 
+def _recompute_all_metrics_from_traces(alldata, data_dir, fmcsi_traces_lookup):
 
-# def _plot_cascade_comparison(ax, npz_path=CASCADE_COMPARISON_NPZ):
-#     from matplotlib.patches import Patch
+    def _from_probs(true_spikes, true_events, probs, fs, sigma):
+        lag = diagnose_time_shift(true_spikes, probs, fs)
+        spikes, _ = fMCSI.detect_spikes_from_probs(probs, fs, lag_s=lag, sigma=sigma)
+        prec,   rec,   f1   = fMCSI.compute_accuracy_strict(
+            true_spikes, spikes, tolerance=0.1)
+        prec_w, rec_w, f1_w = compute_accuracy_window(
+            true_spikes, spikes, tolerance=0.1)
+        prec_e, rec_e, f1_e = compute_accuracy_window(
+            true_events, spikes, tolerance=0.1)
+        cosmic = fMCSI.helpers.compute_cosmic(true_spikes, spikes, fs)
+        return lag, prec, rec, f1, prec_w, rec_w, f1_w, prec_e, rec_e, f1_e, cosmic
 
-#     data      = np.load(npz_path)
-#     fb_7      = data['fb_7']
-#     fb_30     = data['fb_30']
-#     cosmic_7  = data['cosmic_7']
-#     cosmic_30 = data['cosmic_30']
+    def _from_spikes(true_spikes, true_events, spikes, fs):
+        prec,   rec,   f1   = fMCSI.compute_accuracy_strict(
+            true_spikes, spikes, tolerance=0.1)
+        prec_w, rec_w, f1_w = compute_accuracy_window(
+            true_spikes, spikes, tolerance=0.1)
+        prec_e, rec_e, f1_e = compute_accuracy_window(
+            true_events, spikes, tolerance=0.1)
+        cosmic = fMCSI.helpers.compute_cosmic(true_spikes, spikes, fs)
+        return prec, rec, f1, prec_w, rec_w, f1_w, prec_e, rec_e, f1_e, cosmic
 
-#     pos = [1, 2, 3.15, 4.15]
-#     datasets = [
-#         (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
-#         (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
-#         (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
-#         (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
-#     ]
-#     parts = ax.violinplot([d for d, _ in datasets], positions=pos,
-#                           showmedians=True, widths=0.65)
-#     for pc, (_, col) in zip(parts['bodies'], datasets):
-#         pc.set_facecolor(col); pc.set_alpha(0.75)
-#     for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
-#         parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
-#     ax.set_xticks(pos)
-#     ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
-#     ax.legend(handles=[
-#         Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
-#         Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
-#     ], loc='upper right', handlelength=1.0, handleheight=0.8,
-#        borderpad=0.4, labelspacing=0.2, frameon=False)
-#     ax.set_ylabel('Score')
-#     ax.set_ylim([0, 1.1])
-#     ax.set_title('CASCADE by sample rate')
+    def _apply(recs, lag, prec, rec, f1, prec_w, rec_w, f1_w,
+               prec_e, rec_e, f1_e, cosmic):
+        for i, r in enumerate(recs):
+            if i >= len(cosmic):
+                break
+            if lag is not None:
+                r['lag'] = float(lag)
+            r['precision']       = float(prec[i]);   r['recall']       = float(rec[i])
+            r['f1']              = float(f1[i])
+            r['precision_window']= float(prec_w[i]); r['recall_window']= float(rec_w[i])
+            r['f1_window']       = float(f1_w[i])
+            r['precision_event'] = float(prec_e[i]); r['recall_event'] = float(rec_e[i])
+            r['f1_event']        = float(f1_e[i])
+            r['cosmic']          = float(cosmic[i])
+
+    updated = {m: 0 for m in _MODEL_ORDER}
+
+    for fpath in _glob.glob(
+            os.path.join(data_dir, 'allen_data_results_*_traces.npz')):
+        basename = os.path.basename(fpath)
+        if 'allen_data_results_fmcsi_'   in basename: continue
+        if 'allen_data_results_cascade_' in basename: continue
+        orig  = basename.replace('allen_data_results_', '').replace('_traces.npz', '')
+        label = clean_label(normalize_label(orig))
+        try:
+            d = np.load(fpath, allow_pickle=True)
+        except Exception as exc:
+            print(f"  Warning: could not load {fpath}: {exc}"); continue
+        if 'true_spikes' not in d:
+            continue
+        true_spikes = list(d['true_spikes'])
+        fs  = float(d['fs'])  if 'fs'  in d else float(
+            re.search(r'(\d+)[Hh]z', basename).group(1)
+            if re.search(r'(\d+)[Hh]z', basename) else 30)
+        tau = float(d['tau']) if 'tau' in d else 1.2
+        true_events = [fMCSI.helpers.make_event_ground_truth(sp, tau)
+                       for sp in true_spikes]
+
+        df = None
+        if orig in fmcsi_traces_lookup:
+            try:
+                df = np.load(fmcsi_traces_lookup[orig], allow_pickle=True)
+            except Exception:
+                df = None
+
+        src_my = df if (df is not None and 'my_probs' in df) else d
+        if 'my_probs' in src_my:
+            recs = [r for r in alldata
+                    if r.get('model') == 'fMCSI' and r.get('label') == label]
+            if recs:
+                lag, *rest = _from_probs(
+                    true_spikes, true_events, src_my['my_probs'], fs, sigma=1.5)
+                _apply(recs, lag, *rest)
+                updated['fMCSI'] += len(recs)
+
+        src_oa = df if (df is not None and 'oasis_probs' in df) else d
+        if 'oasis_probs' in src_oa:
+            recs = [r for r in alldata
+                    if r.get('model') == 'OASIS' and r.get('label') == label]
+            if recs:
+                lag, *rest = _from_probs(
+                    true_spikes, true_events, src_oa['oasis_probs'], fs, sigma=0.5)
+                _apply(recs, lag, *rest)
+                updated['OASIS'] += len(recs)
+
+        if ('trad_probs' in d
+                and np.asarray(d['trad_probs']).ndim == 2
+                and np.asarray(d['trad_probs']).size > 0):
+            recs = [r for r in alldata
+                    if r.get('model') == 'MATLAB' and r.get('label') == label]
+            if recs:
+                lag, *rest = _from_probs(
+                    true_spikes, true_events, d['trad_probs'], fs, sigma=1.5)
+                _apply(recs, lag, *rest)
+                updated['MATLAB'] += len(recs)
+
+    for orig, fmcsi_path in fmcsi_traces_lookup.items():
+        group_fpath = os.path.join(
+            data_dir, f'allen_data_results_{orig}_traces.npz')
+        if os.path.exists(group_fpath):
+            continue
+        label = clean_label(normalize_label(orig))
+        try:
+            df = np.load(fmcsi_path, allow_pickle=True)
+        except Exception as exc:
+            print(f"  Warning: could not load {fmcsi_path}: {exc}"); continue
+        if 'true_spikes' not in df:
+            continue
+        true_spikes = list(df['true_spikes'])
+        fs  = float(df['fs'])  if 'fs'  in df else 30.0
+        tau = float(df['tau']) if 'tau' in df else 1.2
+        true_events = [fMCSI.helpers.make_event_ground_truth(sp, tau)
+                       for sp in true_spikes]
+
+        if 'my_probs' in df:
+            recs = [r for r in alldata
+                    if r.get('model') == 'fMCSI' and r.get('label') == label]
+            if recs:
+                lag, *rest = _from_probs(
+                    true_spikes, true_events, df['my_probs'], fs, sigma=1.5)
+                _apply(recs, lag, *rest)
+                updated['fMCSI'] += len(recs)
+
+        if 'oasis_probs' in df:
+            recs = [r for r in alldata
+                    if r.get('model') == 'OASIS' and r.get('label') == label]
+            if recs:
+                lag, *rest = _from_probs(
+                    true_spikes, true_events, df['oasis_probs'], fs, sigma=0.5)
+                _apply(recs, lag, *rest)
+                updated['OASIS'] += len(recs)
+
+    cascade_lookup = _build_cascade_lookup(data_dir)
+    for label_raw, (cas_fpath, _) in cascade_lookup.items():
+        label = clean_label(normalize_label(label_raw))
+        try:
+            dc = np.load(cas_fpath, allow_pickle=True)
+        except Exception as exc:
+            print(f"  Warning: could not load {cas_fpath}: {exc}"); continue
+        if 'true_spikes' not in dc or 'cascade_spikes' not in dc:
+            continue
+        true_spikes = list(dc['true_spikes'])
+        fs  = float(dc['fs'])  if 'fs'  in dc else 30.0
+        tau = float(dc['tau']) if 'tau' in dc else 1.2
+        true_events    = [fMCSI.helpers.make_event_ground_truth(sp, tau)
+                          for sp in true_spikes]
+        cascade_spikes = list(dc['cascade_spikes'])
+
+        recs = [r for r in alldata
+                if r.get('model') == 'CASCADE' and r.get('label') == label]
+        if recs:
+            rest = _from_spikes(true_spikes, true_events, cascade_spikes, fs)
+            _apply(recs, None, *rest)
+            updated['CASCADE'] += len(recs)
+
+    any_updated = False
+    for model in _MODEL_ORDER:
+        n = updated[model]
+        if n:
+            print(f"  {model}: recomputed metrics for {n} cells.")
+            any_updated = True
+    if not any_updated:
+        print("  No trace data found — metrics unchanged from saved values.")
 
 
 def plot_figure(data_dir):
 
-    alldata      = []
-    label_map    = {}
+    alldata       = []
+    label_map     = {}
     file_path_map = {}
 
+    fmcsi_records_lookup = _build_fmcsi_records_lookup(data_dir)
+    fmcsi_traces_lookup  = _build_fmcsi_traces_lookup(data_dir)
+
+    fmcsi_data_cache = {}
+    for orig_basename, fmcsi_path in fmcsi_records_lookup.items():
+        try:
+            fmcsi_data_cache[orig_basename] = _load_records(fmcsi_path)
+        except Exception as exc:
+            print(f"Warning: could not load {fmcsi_path}: {exc}")
+            fmcsi_data_cache[orig_basename] = []
+    if fmcsi_data_cache:
+        print(f"Found {len(fmcsi_data_cache)} newer fMCSI records file(s); "
+              f"they will override group-file data for models they contain.")
+
     for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
+        basename = os.path.basename(fpath)
         is_cascade = 'allen_data_results_cascade_' in fpath
+
+        if 'allen_data_results_fmcsi_' in fpath:
+            continue
         try:
             data = _load_records(fpath)
         except Exception as exc:
             print(f"Warning: could not load {fpath}: {exc}")
             continue
-        orig_basename = (os.path.basename(fpath)
+        orig_basename = (basename
                          .replace('allen_data_results_cascade_', '')
                          .replace('allen_data_results_', '')
                          .replace('.npz', ''))
@@ -1336,23 +1753,36 @@ def plot_figure(data_dir):
         label_map[label]     = norm_label
         file_path_map.setdefault(label, orig_basename)
         geno = get_genotype(orig_basename)
+
+        if not is_cascade and orig_basename in fmcsi_data_cache:
+            fmcsi_models = {r.get('model') for r in fmcsi_data_cache[orig_basename]}
+            data = [d for d in data if d.get('model') not in fmcsi_models]
         for d in data:
             d['label']    = label
             d['genotype'] = geno
-        if is_cascade:
-            alldata.extend(data)
-        else:
-            alldata.extend(data)
+        alldata.extend(data)
+
+    for orig_basename, fmcsi_recs in fmcsi_data_cache.items():
+        norm_label = normalize_label(orig_basename)
+        label      = clean_label(norm_label)
+        label_map.setdefault(label, norm_label)
+        file_path_map.setdefault(label, orig_basename)
+        geno = get_genotype(orig_basename)
+        for d in fmcsi_recs:
+            d['label']    = label
+            d['genotype'] = geno
+        alldata.extend(fmcsi_recs)
 
     if not alldata:
         print("No data found in data_dir. Run with --mode test first.")
         return
 
-    # Zoom enrichment (label-based only; no raw-data access needed)
+    print("Recomputing all metrics from traces (CosMIC, precision, recall, F_beta)...")
+    _recompute_all_metrics_from_traces(alldata, data_dir, fmcsi_traces_lookup)
+
     for d in alldata:
         d['zoom'] = get_zoom_for_label(d['label'])
 
-    # Pre-compute Fβ
     for d in alldata:
         d['fbeta']        = _fbeta(d.get('precision',        0.0),
                                    d.get('recall',           0.0))
@@ -1367,7 +1797,8 @@ def plot_figure(data_dir):
     print("Loading example cells for raster/trace panel...")
     example_cells = _load_raster_trace_data(
         data_dir, label_map, file_path_map, cascade_lookup,
-        n_cells=5, window=60.0, min_spikes=15)
+        n_cells=5, window=60.0, min_spikes=15,
+        fmcsi_traces_lookup=fmcsi_traces_lookup)
 
     taus    = sorted(set(d['tau'] for d in alldata))
     f1_key  = 'fbeta'          if USE_STRICT_ACCURACY else 'fbeta_window'
@@ -1383,7 +1814,8 @@ def plot_figure(data_dir):
         label_geno_map_l.setdefault(d['label'],
                                     d.get('genotype', get_genotype(d['label'])))
     roc_data = _get_roc_data(unique_labels, label_tau_map_l, label_geno_map_l,
-                              data_dir, cascade_lookup, file_path_map)
+                              data_dir, cascade_lookup, file_path_map,
+                              fmcsi_traces_lookup=fmcsi_traces_lookup)
 
     fig = plt.figure(figsize=(10, 10), dpi=300)
     gs  = gridspec.GridSpec(4, 4, figure=fig,
@@ -1393,7 +1825,6 @@ def plot_figure(data_dir):
     ax_rt = fig.add_subplot(gs[0:2, 0:2])
     _plot_combined_raster_trace(ax_rt, example_cells, window=60.0)
 
-    # Row 0: high-zoom precision (col 2) and low-zoom precision (col 3)
     ax_hz_p = fig.add_subplot(gs[0, 2])
     ax_lz_p = fig.add_subplot(gs[0, 3])
     _plot_violin_metric(ax_hz_p, alldata, taus, 'High Zoom', prec_key, 'Precision')
@@ -1401,7 +1832,6 @@ def plot_figure(data_dir):
     _plot_violin_metric(ax_lz_p, alldata, taus, 'Low Zoom', prec_key, 'Precision')
     ax_lz_p.set_title('low zoom')
 
-    # Row 1: high-zoom recall (col 2) and low-zoom recall (col 3)
     ax_hz_r = fig.add_subplot(gs[1, 2])
     ax_lz_r = fig.add_subplot(gs[1, 3])
     _plot_violin_metric(ax_hz_r, alldata, taus, 'High Zoom', rec_key, 'Recall')
@@ -1409,7 +1839,6 @@ def plot_figure(data_dir):
     _plot_violin_metric(ax_lz_r, alldata, taus, 'Low Zoom', rec_key, 'Recall')
     ax_lz_r.set_title('low zoom')
 
-    # Row 2: Fbeta (col 0), CoSMIC (col 1), F1-by-tau violin spanning cols 2-3
     ax_fbeta = fig.add_subplot(gs[2, 0])
     _plot_fbeta_violin(ax_fbeta, alldata)
 
@@ -1419,8 +1848,6 @@ def plot_figure(data_dir):
     ax_f1 = fig.add_subplot(gs[2, 2:4])
     _plot_f1_violin(ax_f1, alldata, taus, f1_key=f1_key)
 
-    # Row 3: ROC by zoom (col 0), ROC by genotype (col 1),
-    #         strict-vs-window Fbeta (col 2), CASCADE sample-rate comparison (col 3)
     ax_roc_zoom = fig.add_subplot(gs[3, 0])
     _plot_roc_by_zoom_combined(ax_roc_zoom, roc_data)
 
@@ -1431,7 +1858,6 @@ def plot_figure(data_dir):
     _plot_strict_vs_window_f1(ax_strict_win, alldata)
 
     ax_cascade_cmp = fig.add_subplot(gs[3, 3])
-    # _plot_cascade_comparison(ax_cascade_cmp)
 
     plt.tight_layout()
     out_svg = os.path.join(data_dir, 'allen_combined_figure.svg')
@@ -1442,13 +1868,110 @@ def plot_figure(data_dir):
     plt.close()
 
 
+def print_stats(data_dir=_DEFAULT_DATA_DIR):
+
+    alldata = []
+    for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
+        try:
+            data = _load_records(fpath)
+        except Exception as exc:
+            print(f"Warning: could not load {fpath}: {exc}")
+            continue
+        orig_basename = (os.path.basename(fpath)
+                         .replace('allen_data_results_cascade_', '')
+                         .replace('allen_data_results_', '')
+                         .replace('.npz', ''))
+        geno = get_genotype(orig_basename)
+        for d in data:
+            d['label']    = clean_label(normalize_label(orig_basename))
+            d['genotype'] = geno
+            d['zoom']     = get_zoom_for_label(d['label'])
+            d['fbeta']        = _fbeta(d.get('precision',        0.0), d.get('recall',        0.0))
+            d['fbeta_window'] = _fbeta(d.get('precision_window', 0.0), d.get('recall_window', 0.0))
+        alldata.extend(data)
+
+    if not alldata:
+        print("No data found. Run --mode test first.")
+        return
+
+    print('\n' + '='*80)
+    print('FIGURE 3 STATISTICS')
+    print('='*80)
+
+    print(f'\n{"Method":<12}  {"F_beta strict med":>18}  {"strict IQR":>10}  '
+          f'{"F_beta window med":>18}  {"window IQR":>10}  '
+          f'{"CosMIC med":>11}  {"CosMIC IQR":>10}')
+    print('-'*98)
+    for model_name in _MODEL_ORDER:
+        md = [d for d in alldata if d['model'] == model_name]
+        if not md:
+            continue
+        fb_s   = np.array([d['fbeta']        for d in md], dtype=float)
+        fb_w   = np.array([d['fbeta_window'] for d in md], dtype=float)
+        cosmic = np.array([d.get('cosmic', np.nan) for d in md], dtype=float)
+        fs_med = np.nanmedian(fb_s);   fs_iqr = np.subtract(*np.nanpercentile(fb_s,   [75, 25]))
+        fw_med = np.nanmedian(fb_w);   fw_iqr = np.subtract(*np.nanpercentile(fb_w,   [75, 25]))
+        co_med = np.nanmedian(cosmic); co_iqr = np.subtract(*np.nanpercentile(cosmic, [75, 25]))
+        print(f'{model_name:<12}  {fs_med:>18.3f}  {fs_iqr:>10.3f}  '
+              f'{fw_med:>18.3f}  {fw_iqr:>10.3f}  '
+              f'{co_med:>11.3f}  {co_iqr:>10.3f}')
+
+    cascade_lookup = _build_cascade_lookup(data_dir)
+    unique_labels  = list(set(d['label'] for d in alldata))
+    label_tau_map  = {d['label']: d.get('tau', 1.2) for d in alldata}
+    label_geno_map = {d['label']: d.get('genotype', 'Other') for d in alldata}
+    file_path_map  = {}
+    for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
+        orig = (os.path.basename(fpath)
+                .replace('allen_data_results_cascade_', '')
+                .replace('allen_data_results_', '')
+                .replace('.npz', ''))
+        label = clean_label(normalize_label(orig))
+        file_path_map.setdefault(label, orig)
+
+    print('\nComputing ROC / AUC (may take a moment)...')
+    roc_data = _get_roc_data(unique_labels, label_tau_map, label_geno_map,
+                             data_dir, cascade_lookup, file_path_map)
+
+    genotypes = sorted(set(e['genotype'] for e in roc_data))
+    print(f'\n--- AUC by genotype ---')
+    print(f'{"Genotype":<12}  {"Method":<10}  {"Median AUC":>11}  {"IQR":>8}  {"N":>4}')
+    print('-'*52)
+    for geno in genotypes:
+        entries = [e for e in roc_data if e['genotype'] == geno]
+        for model_name in _MODEL_ORDER:
+            aucs = np.array([e['methods'][model_name][2]
+                    for e in entries if model_name in e['methods']
+                    and not np.isnan(e['methods'][model_name][2])])
+            if len(aucs):
+                iqr = np.subtract(*np.percentile(aucs, [75, 25]))
+                print(f'{geno:<12}  {model_name:<10}  {np.median(aucs):>11.3f}  '
+                      f'{iqr:>8.3f}  {len(aucs):>4}')
+
+    zooms = sorted(set(e['zoom'] for e in roc_data))
+    print(f'\n--- AUC by zoom ---')
+    print(f'{"Zoom":<12}  {"Method":<10}  {"Median AUC":>11}  {"IQR":>8}  {"N":>4}')
+    print('-'*52)
+    for zoom in zooms:
+        entries = [e for e in roc_data if e['zoom'] == zoom]
+        for model_name in _MODEL_ORDER:
+            aucs = np.array([e['methods'][model_name][2]
+                    for e in entries if model_name in e['methods']
+                    and not np.isnan(e['methods'][model_name][2])])
+            if len(aucs):
+                iqr = np.subtract(*np.percentile(aucs, [75, 25]))
+                print(f'{zoom:<12}  {model_name:<10}  {np.median(aucs):>11.3f}  '
+                      f'{iqr:>8.3f}  {len(aucs):>4}')
+
+
 def main():
 
     parser = argparse.ArgumentParser(
         description='Figure 3 — Allen data benchmark'
     )
-    parser.add_argument('--mode', required=True, choices=['test', 'plot'],
-                        help='test: run inference; plot: make figure')
+    parser.add_argument('--mode', required=True, choices=['test', 'fmcsi', 'plot', 'print'],
+                        help='test: run all inference; fmcsi: re-run fMCSI only; '
+                             'plot: make figure; print: print stats')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
                         help='Directory for output data/figures')
     parser.add_argument('--allen-data-dir', default='/home/dylan/Fast2/spike_deconv/allen_results/raw_data',
@@ -1465,8 +1988,17 @@ def main():
             allen_data_dir=args.allen_data_dir,
             run_matlab=not args.no_matlab,
         )
-    else:
+    elif args.mode == 'fmcsi':
+        if not args.allen_data_dir:
+            parser.error('--allen-data-dir is required for fmcsi mode')
+        test_fmcsi(
+            data_dir=args.data_dir,
+            allen_data_dir=args.allen_data_dir,
+        )
+    elif args.mode == 'plot':
         plot_figure(data_dir=args.data_dir)
+    else:
+        print_stats(data_dir=args.data_dir)
 
 
 if __name__ == '__main__':

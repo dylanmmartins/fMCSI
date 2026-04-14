@@ -52,7 +52,6 @@ _TRACE_METHODS = ['fmcsi', 'oasis', 'matlab', 'cascade_loo']
 _CASCADE_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'run_cascade_subprocess.py')
 
-# Pretrained CASCADE models keyed by approximate frame rate
 _CASCADE_MODELS = [
     (7.5,  'Global_EXC_7.5Hz_smoothing200ms'),
     (30.0, 'Global_EXC_30Hz_smoothing50ms_causalkernel'),
@@ -63,9 +62,18 @@ def _cascade_model_for_fs(fs):
     return min(_CASCADE_MODELS, key=lambda x: abs(x[0] - fs))[1]
 
 _SENSOR_ORDER = [
-    'GCaMP6f', 'GCaMP6s', 'GCaMP7f', 'GCaMP8f', 'GCaMP8m', 'GCaMP8s',
+    'GCaMP6f', 'GCaMP6s', 'GCaMP8f', 'GCaMP8m',
     'GCaMP5k', 'OGB1', 'Cal520', 'jGECO', 'XCaMP', 'R-CaMP', 'jRCaMP', 'Other',
 ]
+
+# Datasets excluded from the benchmark due to temporal misalignment between
+# the calcium imaging and electrophysiology ground truth:
+#   DS29-GCaMP7f-m-V1 : dF/F is flat at spike times; predicted spikes are
+#                        displaced by seconds from ground truth.
+#   DS32-GCaMP8s-m-V1 : dF/F is negative at spike times; cross-correlation
+#                        lags are incoherent across cells (-14 to +15 s),
+#                        ruling out a simple global time-shift correction.
+_EXCLUDED_DATASETS = {'DS29-GCaMP7f-m-V1', 'DS32-GCaMP8s-m-V1'}
 
 _DS_TAU = {
     'DS01': 0.6, 'DS02': 0.6, 'DS03': 0.6, 'DS04': 0.6, 'DS05': 0.6,
@@ -451,8 +459,10 @@ def test_figure(data_dir, ground_truth_dir, methods=None):
     ds_folders = sorted(
         d for d in os.listdir(ground_truth_dir)
         if os.path.isdir(os.path.join(ground_truth_dir, d))
+        and d not in _EXCLUDED_DATASETS
     )
-    print(f"Found {len(ds_folders)} dataset folders.\n")
+    print(f"Found {len(ds_folders)} dataset folders "
+          f"({len(_EXCLUDED_DATASETS)} excluded).\n")
 
     for model in methods:
         traces_dir = os.path.join(data_dir, f'ground_truth_traces_{model}')

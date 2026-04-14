@@ -158,7 +158,7 @@ def compute_accuracy_strict(true_spikes, predicted_spikes, tolerance=0.100):
 
 
 
-def compute_cosmic(true_spikes, inferred_spikes, fs, tolerance=0.05):
+def compute_cosmic(true_spikes, inferred_spikes, fs, tolerance=0.100):
 
     from scipy.signal import fftconvolve
 
