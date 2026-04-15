@@ -57,7 +57,7 @@ COLORS = {
 OASIS_SPIKE_DETECTION = 'peaks'
 
 
-def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+def _oasis_spikes_from_s(s, sigma, fs, height=1.0):
     thresh = height * sigma
     if OASIS_SPIKE_DETECTION == 'peaks':
         min_dist = max(1, int(0.05 * fs))
@@ -1062,9 +1062,9 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     scaling_stats = []
 
     mosaic = [
-        ['sweeps',  'cells',   'duration', 'cascade_cmp'],
-        ['tau_p',   'tau_r',   'fs_p',     'fs_r'       ],
-        ['kurt_f',  'kurt_p',  'kurt_r',   'kurt_cosmic' ],
+        ['sweeps',  'cells',    'duration',  'cascade_cmp'],
+        ['tau_p',   'tau_r',    'kurt_f',    'kurt_cosmic'],
+        ['fs_p',    'fs_r',     'fs_fb',     'fs_cosmic'  ],
     ]
     fig, axes = plt.subplot_mosaic(mosaic, figsize=(7, 4.5), dpi=300)
 
@@ -1074,14 +1074,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             continue
         subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Sweeps'), 'Sweeps')
         if _tbl_len(subset) > 0:
-            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 3600.0,
+            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
                                 '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Sweeps'], subset['Time'])
             scaling_stats.append({'Experiment': 'Sweeps', 'Model': model,
                                    'Variable': 'Sweeps', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['sweeps'].set_xlabel('# sweeps')
-    axes['sweeps'].set_ylabel('compute time (hr)')
+    axes['sweeps'].set_ylabel('compute time (min)')
     axes['sweeps'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
@@ -1093,14 +1093,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Cell_Scaling'), 'N_Cells')
         if _tbl_len(subset) > 0:
-            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 3600.,
+            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 60.,
                                '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['N_Cells'], subset['Time'])
             scaling_stats.append({'Experiment': 'Cell_Scaling', 'Model': model,
                                    'Variable': 'N_Cells', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['cells'].set_xlabel('# cells')
-    axes['cells'].set_ylabel('compute time (hr)')
+    axes['cells'].set_ylabel('compute time (min)')
     axes['cells'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
@@ -1112,14 +1112,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Duration_Scaling'), 'Duration')
         if _tbl_len(subset) > 0:
-            axes['duration'].plot(subset['Duration'] / 3600., subset['Time'] / 3600.,
+            axes['duration'].plot(subset['Duration'] / 3600., subset['Time'] / 60.,
                                   '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Duration'], subset['Time'])
             scaling_stats.append({'Experiment': 'Duration_Scaling', 'Model': model,
                                    'Variable': 'Duration', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['duration'].set_xlabel('recording duration (hr)')
-    axes['duration'].set_ylabel('compute time (hr)')
+    axes['duration'].set_ylabel('compute time (min)')
     axes['duration'].set_yscale('log')
     _set_three_ticks_x(axes['duration'])
 
@@ -1129,7 +1129,6 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             continue
         for exp, xcol, ax_p, ax_r in [
             ('Tau_Sensitivity', 'Tau', 'tau_p', 'tau_r'),
-            ('Fs_Sensitivity',  'Fs',  'fs_p',  'fs_r'),
         ]:
             subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', exp), xcol)
             if model.startswith('CASCADE'):
@@ -1140,10 +1139,25 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
                                 color=COLORS.get(model, 'k'))
                 axes[ax_r].plot(subset[xcol], subset[rec_col],  '.-',
                                 color=COLORS.get(model, 'k'))
+        subset_fs = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        if model.startswith('CASCADE'):
+            subset_fs = _filter_cascade_shared_x(
+                subset_fs, _tbl_filter(combined, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        if _tbl_len(subset_fs) > 0:
+            fb_fs = _fbeta(subset_fs[prec_col], subset_fs[rec_col])
+            axes['fs_p'].plot(subset_fs['Fs'], subset_fs[prec_col], '.-',
+                              color=COLORS.get(model, 'k'))
+            axes['fs_r'].plot(subset_fs['Fs'], subset_fs[rec_col],  '.-',
+                              color=COLORS.get(model, 'k'))
+            axes['fs_fb'].plot(subset_fs['Fs'], fb_fs, '.-',
+                               color=COLORS.get(model, 'k'))
+            axes['fs_cosmic'].plot(subset_fs['Fs'], subset_fs['COSMIC'], '.-',
+                                   color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
-        ('tau_p', 'tau (s)', 'Precision'), ('tau_r', 'tau (s)', 'Recall'),
-        ('fs_p',  'Hz',      'precision'), ('fs_r',  'Hz',      'recall'),
+        ('tau_p',     'tau (s)', 'Precision'),   ('tau_r',     'tau (s)', 'Recall'),
+        ('fs_p',      'Hz',      'Precision'),   ('fs_r',      'Hz',      'Recall'),
+        ('fs_fb',     'Hz',      r'$F_\beta$'),  ('fs_cosmic', 'Hz',      'CosMIC'),
     ]:
         axes[ax_key].set_xlabel(xlabel)
         axes[ax_key].set_ylabel(ylabel)
@@ -1165,18 +1179,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             fb = _fbeta(subset[prec_col], subset[rec_col])
             axes['kurt_f'].plot(subset['Mean_Kurtosis'], fb, '.-',
                                 color=COLORS.get(model, 'k'))
-            axes['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
-                                color=COLORS.get(model, 'k'))
-            axes['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col],  '.-',
-                                color=COLORS.get(model, 'k'))
             axes['kurt_cosmic'].plot(subset['Mean_Kurtosis'], subset['COSMIC'], '.-',
                                      color=COLORS.get(model, 'k'))
 
-    for ax_key, ylabel in [
-        ('kurt_f',      r'$F_\beta$'), ('kurt_p', 'precision'),
-        ('kurt_r',      'recall'),     ('kurt_cosmic', 'CosMIC score'),
+    for ax_key, xlabel, ylabel in [
+        ('kurt_f',      'mean kurtosis', r'$F_\beta$'),
+        ('kurt_cosmic', 'mean kurtosis', 'CosMIC'),
     ]:
-        axes[ax_key].set_xlabel('mean kurtosis')
+        axes[ax_key].set_xlabel(xlabel)
         axes[ax_key].set_ylabel(ylabel)
         axes[ax_key].set_ylim(-0.05, 1.05)
         _set_three_ticks_x(axes[ax_key])

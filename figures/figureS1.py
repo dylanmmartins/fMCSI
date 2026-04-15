@@ -36,7 +36,7 @@ COLORS = {
 }
 
 OASIS_THRESHOLDS   = np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0])
-CASCADE_THRESHOLDS = np.array([0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0])
+CASCADE_THRESHOLDS = np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0])
 
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'figS1')
 
@@ -99,7 +99,7 @@ def _fbeta(precision, recall):
 
 
 def _compute_metrics(true_spikes, spikes_list):
-    prec, rec, _ = fMCSI.compute_accuracy_window(true_spikes, spikes_list)
+    prec, rec, _ = fMCSI.helpers.compute_accuracy_window(true_spikes, spikes_list)
     fb           = _fbeta(prec, rec)
     cosmic       = compute_cosmic(true_spikes, spikes_list, FS)
     return prec, rec, fb, cosmic

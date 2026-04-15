@@ -83,7 +83,7 @@ except Exception as _e:
 CASCADE_SPIKE_DETECTION = 'peaks'
 
 
-def _probs_to_spikes(probs, fs, height=0.2):
+def _probs_to_spikes(probs, fs, height=0.5):
 
     if CASCADE_SPIKE_DETECTION == 'threshold':
         return np.where(probs > height)[0] / fs

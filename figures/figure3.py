@@ -62,7 +62,7 @@ BETA = 0.5
 OASIS_SPIKE_DETECTION = 'peaks'
 
 
-def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+def _oasis_spikes_from_s(s, sigma, fs, height=1.0):
     thresh = height * sigma
     if OASIS_SPIKE_DETECTION == 'peaks':
         min_dist = max(1, int(0.05 * fs))
@@ -1313,6 +1313,9 @@ def _plot_combined_raster_trace(ax, cells, window=60.0):
         if i == 0:
             ax.text(label_x, trace_y0 + th / 2, 'ΔF/F',
                     va='center', ha='right', color='k')
+        ax.text(label_x / 2, trace_y0 + th / 2, str(i + 1),
+                va='center', ha='center', color='k', fontsize=5.5,
+                fontweight='bold')
         ax.text(window + 0.8, base + cell_h / 2 - gap / 2,
                 f'kurt={cell["kurtosis"]:.1f}', va='center', ha='left')
         if i < n - 1:
