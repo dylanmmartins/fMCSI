@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 import matplotlib as mpl
+from scipy.signal import find_peaks
 from oasis.functions import deconvolve as oasis_deconv
 
 import fMCSI
@@ -41,7 +42,7 @@ DURATION = 60 * 20
 TAU      = 1.2
 N_CELLS  = 500
 BETA     = 0.5
-USE_STRICT_ACCURACY = True
+USE_STRICT_ACCURACY = False
 
 COLORS = {
     'fMCSI':       '#4C72B0',
@@ -58,6 +59,20 @@ _NPZ_NAMES = {
     'CASCADE_GPU': 'fixed_benchmark_CASCADE_GPU.npz',
     'CASCADE_CPU': 'fixed_benchmark_CASCADE_CPU.npz',
 }
+
+#   'threshold' : return every frame where s > height * sigma (default)
+#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
+
+
+def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+    thresh = height * sigma
+    if OASIS_SPIKE_DETECTION == 'peaks':
+        min_dist = max(1, int(0.05 * fs))
+        peaks, _ = find_peaks(s, height=thresh, distance=min_dist)
+        return peaks / fs
+    return np.where(s > thresh)[0] / fs
+
 
 def _run_cascade_inference(dff, fs, n_cells, data_dir, prefix='fig1_cascade', device='gpu'):
 
@@ -175,8 +190,7 @@ def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
         for i in range(N_CELLS):
             g = np.exp(-1 / (FS * TAU))
             _, s, _, _, _ = oasis_deconv(noisy[i], g=(g,), sn=sigmas[i], penalty=1)
-            spk_idx = np.where(s > 0.2 * sigmas[i])[0]
-            oasis_spikes.append(spk_idx / FS)
+            oasis_spikes.append(_oasis_spikes_from_s(s, sigmas[i], FS))
         oasis_time = time.time() - t0
         oasis_prec, oasis_rec, oasis_F1 = fMCSI.compute_accuracy_strict(true_spikes, oasis_spikes)
         print(f'  OASIS took {oasis_time:.1f}s  P={np.nanmean(oasis_prec):.3f}  '
@@ -378,6 +392,21 @@ def _plot_raster(ax, cells, window=60.0):
     ax.set_xlabel('Time (s)')
 
 
+def _with_window_metrics(res, prefix, true_spikes_list):
+
+    pk = f'{prefix}_precision_window'
+    d  = dict(res)
+    if pk in res.files:
+        return d
+    spk_key = f'{prefix}_spikes'
+    pred = list(res[spk_key])
+    prec_w, rec_w, f1_w = fMCSI.helpers.compute_accuracy_window(true_spikes_list, pred)
+    d[f'{prefix}_precision_window'] = prec_w
+    d[f'{prefix}_recall_window']    = rec_w
+    d[f'{prefix}_F1_window']        = f1_w
+    return d
+
+
 def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     paths = {k: os.path.join(data_dir, v) for k, v in _NPZ_NAMES.items()}
@@ -394,6 +423,13 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     CASCADE_CPU_RESULTS = np.load(paths['CASCADE_CPU'], allow_pickle=True)
 
     n_cells = int(MINE_RESULTS['n_cells'])
+
+    true_spikes_list = list(MINE_RESULTS['true_spikes'])
+    MINE_RESULTS        = _with_window_metrics(MINE_RESULTS,        'optim',   true_spikes_list)
+    MATLAB_RESULTS      = _with_window_metrics(MATLAB_RESULTS,      'tradmat', true_spikes_list)
+    OASIS_RESULTS       = _with_window_metrics(OASIS_RESULTS,       'oasis',   true_spikes_list)
+    CASCADE_GPU_RESULTS = _with_window_metrics(CASCADE_GPU_RESULTS, 'cascade', true_spikes_list)
+    CASCADE_CPU_RESULTS = _with_window_metrics(CASCADE_CPU_RESULTS, 'cascade', true_spikes_list)
 
     if USE_STRICT_ACCURACY:
         METHOD_INFO = [

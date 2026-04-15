@@ -351,7 +351,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR, out_dir=_DEFAULT_OUT_DIR):
     print(f'Loaded {sum(len(v) for v in all_records.values())} total records '
           f'across {len(all_records)} methods.\n')
 
-    fig = plt.figure(figsize=(6.5, 8), dpi=200)
+    fig = plt.figure(figsize=(6.5, 5), dpi=200)
 
     outer_gs = gridspec.GridSpec(
         N_SENSORS, 1,

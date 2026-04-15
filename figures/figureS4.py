@@ -33,7 +33,7 @@ _METHODS = {
     'cascade_loo': {'label': 'CASCADE', 'color': '#8172B3'},
 }
 _METHOD_ORDER = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
-_METHOD_GRID  = [('fmcsi', 'matlab'), ('oasis', 'cascade_loo')]   # row, col layout
+_METHOD_GRID  = [('fmcsi', 'matlab'), ('oasis', 'cascade_loo')]
 
 
 def _sensor_colors():
@@ -137,7 +137,6 @@ def _plot_method_panel(ax, records, method_key, sensor_colors):
 def plot_figure(data_dir=_DEFAULT_DATA_DIR, out_dir=_DEFAULT_OUT_DIR):
     os.makedirs(out_dir, exist_ok=True)
 
-    print('Loading figure4 results...')
     all_records = _load_all_records(data_dir)
     if not all_records:
         print(f'No results found in {data_dir}. Run figure4.py --mode test first.')

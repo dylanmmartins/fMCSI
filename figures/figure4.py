@@ -15,7 +15,7 @@ from itertools import groupby
 
 import numpy as np
 import scipy.io
-from scipy.signal import correlate
+from scipy.signal import correlate, find_peaks
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -57,6 +57,19 @@ _CASCADE_MODELS = [
     (30.0, 'Global_EXC_30Hz_smoothing50ms_causalkernel'),
 ]
 
+#   'threshold' : return every frame where s > height * sigma (default)
+#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
+
+
+def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+    thresh = height * sigma
+    if OASIS_SPIKE_DETECTION == 'peaks':
+        min_dist = max(1, int(0.05 * fs))
+        peaks, _ = find_peaks(s, height=thresh, distance=min_dist)
+        return peaks / fs
+    return np.where(s > thresh)[0] / fs
+
 def _cascade_model_for_fs(fs):
     """Return the pretrained CASCADE model name closest to the given frame rate."""
     return min(_CASCADE_MODELS, key=lambda x: abs(x[0] - fs))[1]
@@ -66,14 +79,7 @@ _SENSOR_ORDER = [
     'GCaMP5k', 'OGB1', 'Cal520', 'jGECO', 'XCaMP', 'R-CaMP', 'jRCaMP', 'Other',
 ]
 
-# Datasets excluded from the benchmark due to temporal misalignment between
-# the calcium imaging and electrophysiology ground truth:
-#   DS29-GCaMP7f-m-V1 : dF/F is flat at spike times; predicted spikes are
-#                        displaced by seconds from ground truth.
-#   DS32-GCaMP8s-m-V1 : dF/F is negative at spike times; cross-correlation
-#                        lags are incoherent across cells (-14 to +15 s),
-#                        ruling out a simple global time-shift correction.
-_EXCLUDED_DATASETS = {'DS29-GCaMP7f-m-V1', 'DS32-GCaMP8s-m-V1'}
+_EXCLUDED_DATASETS = {'DS29-GCaMP7f-m-V1', 'DS32-GCaMP8s-m-V1', 'DS28-XCaMPgf-m-V1'}
 
 _DS_TAU = {
     'DS01': 0.6, 'DS02': 0.6, 'DS03': 0.6, 'DS04': 0.6, 'DS05': 0.6,
@@ -354,7 +360,7 @@ def process_dataset(ds_folder, ground_truth_dir, model):
             sigma = max(float(np.median(np.abs(diff)) / (0.6745 * np.sqrt(2))), 1e-9)
             try:
                 _, s, _, _, _ = oasis_deconv(fluo, g=(g_decay,), sn=sigma, penalty=1)
-                spikes_list.append(np.where(s > 0.2 * sigma)[0] / cell['fs'])
+                spikes_list.append(_oasis_spikes_from_s(s, sigma, cell['fs']))
                 probs_list.append(s.astype(np.float32))
             except Exception as exc:
                 print(f"    Warning — inference failed for {cell['fname']}: {exc}")
@@ -507,6 +513,7 @@ def _load_all(data_dir):
             print(f'  (skipping {method_key}: {npz_path} not found)')
             continue
         recs = _load_records(npz_path)
+        recs = [r for r in recs if r.get('dataset') not in _EXCLUDED_DATASETS]
         for r in recs:
             r['method'] = method_key
         all_records[method_key] = recs
@@ -538,7 +545,7 @@ def _best_window_raster(raw, fs, true_spk, pred_spks_list,
 
 
 def _load_raster_cells(data_dir, raster_cells_npz, window=30.0, min_spikes=5):
-    # Required methods — cell excluded if any are missing
+
     _REQUIRED = ['fmcsi', 'oasis', 'matlab']
 
     try:
@@ -556,7 +563,6 @@ def _load_raster_cells(data_dir, raster_cells_npz, window=30.0, min_spikes=5):
         return []
     common_ds = sorted(sets[0].intersection(*sets[1:]))
 
-    # Check whether cascade_loo traces exist
     cas_td       = _traces_dir(data_dir, 'cascade_loo')
     has_cascade  = os.path.isdir(cas_td)
 
@@ -592,7 +598,7 @@ def _load_raster_cells(data_dir, raster_cells_npz, window=30.0, min_spikes=5):
                     ok = False; break
             if not ok:
                 continue
-            # Optionally load cascade_loo (soft — cell not excluded if missing)
+
             if has_cascade:
                 cas_path = os.path.join(cas_td, f'{ds}_traces.npz')
                 try:

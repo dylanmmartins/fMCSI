@@ -26,7 +26,6 @@ import time
 import numpy as np
 from scipy.signal import find_peaks
 
-# Device selection must happen before TF/Keras are imported.
 _device_arg = 'gpu'
 if '--device' in sys.argv:
     _dev_idx = sys.argv.index('--device')
@@ -36,15 +35,11 @@ if '--device' in sys.argv:
 if _device_arg == 'cpu':
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 else:
-    # Remove any inherited override that could hide the GPU from TF.
-    # CUDA_VISIBLE_DEVICES='' or 'NoDevFiles' are also GPU-disabling values,
-    # so pop unconditionally rather than only checking for '-1'.
+
     os.environ.pop('CUDA_VISIBLE_DEVICES', None)
-    # Allow incremental GPU memory growth instead of pre-allocating all VRAM.
-    # TF reads this at import time — must be set before any keras/TF import.
+
     os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
-    # Configure GPU and report what TF/Keras actually sees before Keras imports initialize it.
     try:
         import tensorflow as tf
         gpus = tf.config.list_physical_devices('GPU')
@@ -81,7 +76,17 @@ except Exception as _e:
     pass
 
 
+#   'peaks'     : find local maxima above `height` with a minimum inter-peak
+#                 distance of 50 ms (original CASCADE behaviour).
+#   'threshold' : return every frame whose probability exceeds `height`,
+#                 equivalent to the frame-by-frame threshold used by OASIS.
+CASCADE_SPIKE_DETECTION = 'peaks'
+
+
 def _probs_to_spikes(probs, fs, height=0.2):
+
+    if CASCADE_SPIKE_DETECTION == 'threshold':
+        return np.where(probs > height)[0] / fs
 
     min_dist = max(1, int(0.05 * fs))
     peaks, _ = find_peaks(probs, height=height, distance=min_dist)
@@ -179,7 +184,7 @@ def main():
                         help='CASCADE model name (inference mode, optional)')
     parser.add_argument('--device', default='gpu', choices=['cpu', 'gpu'],
                         help='Hardware device for inference: cpu or gpu (default: gpu)')
-    # loo-predict mode
+
     parser.add_argument('--raster-cells', dest='raster_cells',
                         help='Path to raster_cells.npz (loo-predict mode)')
     parser.add_argument('--loo-models-dir', dest='loo_models_dir',

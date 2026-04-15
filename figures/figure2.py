@@ -13,6 +13,7 @@ Written DMM, March 2026
 """
 
 import argparse
+import json
 import os
 import subprocess
 import time
@@ -27,6 +28,8 @@ import fMCSI.helpers as helpers
 from run_pnev_MCMC import run_matlab_pnevMCMC
 from simulation_helpers import generate_synthetic_data
 
+_MATLAB_PRECOMPUTED_DIR = '/home/dylan/Fast2/spike_deconv/sweeping_benchmarks/all_other_methods'
+
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig2')
 
 mpl.rcParams['axes.spines.top']  = False
@@ -38,7 +41,7 @@ mpl.rcParams['font.size']    = 7
 np.random.seed(3)
 
 BETA = 0.5
-USE_STRICT_ACCURACY = True
+USE_STRICT_ACCURACY = False
 
 COLORS = {
     'fMCSI':        '#4C72B0',
@@ -47,6 +50,20 @@ COLORS = {
     'CASCADE_GPU':  '#8172B3',
     'CASCADE_CPU':  '#B39DDB',
 }
+
+
+#   'threshold' : return every frame where s > height * sigma (default)
+#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
+
+
+def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+    thresh = height * sigma
+    if OASIS_SPIKE_DETECTION == 'peaks':
+        min_dist = max(1, int(0.05 * fs))
+        peaks, _ = find_peaks(s, height=thresh, distance=min_dist)
+        return peaks / fs
+    return np.where(s > thresh)[0] / fs
 
 
 def _run_cascade_inference(dff, fs, data_dir, prefix, device='gpu'):
@@ -137,6 +154,21 @@ def _tbl_sort(tbl, col):
     return {k: v[idx] for k, v in tbl.items()}
 
 
+def _records_to_tbl(records):
+    if not records:
+        return {}
+    keys = list(dict.fromkeys(k for r in records for k in r))
+    out = {}
+    for k in keys:
+        vals = [r.get(k, None) for r in records]
+        if any(isinstance(v, str) for v in vals if v is not None):
+            out[k] = np.array([str(v) if v is not None else '' for v in vals], dtype=object)
+        else:
+            out[k] = np.array([float(v) if v is not None else np.nan for v in vals],
+                               dtype=np.float64)
+    return out
+
+
 def _tbl_concat(tbls):
     tbls = [t for t in tbls if t]
     if not tbls:
@@ -170,13 +202,44 @@ def _oasis_spikes(dff, fs, tau, n_cells):
     for i in range(n_cells):
         g = np.exp(-1 / (fs * tau))
         c, s, _, _, _ = deconvolve(dff[i], g=(g,), sn=sigmas[i], penalty=1)
-        spikes.append(np.where(s > 0.2 * sigmas[i])[0] / fs)
+        spikes.append(_oasis_spikes_from_s(s, sigmas[i], fs))
         calcium.append(c)
     return spikes, calcium
 
 
+def _trad_mcmc_from_json(json_path):
+
+    if not os.path.exists(json_path):
+        print(f'  WARNING: precomputed file not found: {json_path}')
+        return []
+    with open(json_path) as f:
+        data = json.load(f)
+    out = []
+    for r in data:
+        key = 'Model' if 'Model' in r else 'model'
+        if r.get(key) == 'Trad MCMC':
+            r = dict(r)
+            r[key] = 'CaImAn MCMC'
+            out.append(r)
+    return out
+
+
+def _load_external_matlab_data():
+
+    d = _MATLAB_PRECOMPUTED_DIR
+    return {
+        'sweeps':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_sweeps_partial.json')),
+        'scalability':  _trad_mcmc_from_json(os.path.join(d, 'benchmark_scalability_partial.json')),
+        'params':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_params_partial.json')),
+        'kurtosis':     _trad_mcmc_from_json(os.path.join(d, 'benchmark_kurtosis_partial.json')),
+        'firing_rate':  _trad_mcmc_from_json(os.path.join(d, 'firing_rate_sensitivity_partial.json')),
+        'sweeps_traces_npz':      os.path.join(d, 'benchmark_sweeps_traces.npz'),
+        'firing_rate_traces_npz': os.path.join(d, 'firing_rate_sensitivity_traces.npz'),
+    }
+
+
 def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                     run_cascade=True):
+                     run_cascade=True, matlab_records=None):
 
     n_cells     = 50
     duration    = 600
@@ -245,7 +308,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 trad_spikes, _, _, _ = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps=s)
@@ -262,6 +325,11 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
 
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (sweeps) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     npz_save = {'dff': dff, 'fs': fs, 'tau': tau}
     for k, v in npz_spikes.items():
         npz_save[f'spikes_{k}'] = np.array(v, dtype=object)
@@ -272,7 +340,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
 
 
 def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                           run_cascade=True):
+                           run_cascade=True, matlab_records=None):
 
     fs  = 30.0
     tau = 1.2
@@ -310,7 +378,7 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 _, _, _, sweeps = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
@@ -377,7 +445,7 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 _, _, _, sweeps = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
@@ -418,11 +486,16 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
 
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (scalability) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                     run_cascade=True):
+                     run_cascade=True, matlab_records=None):
     
     n_cells  = 50
     duration = 300
@@ -454,7 +527,7 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                     n_cells=n_cells, duration=duration))
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, sweeps = run_matlab_pnevMCMC(
                     dff, fs=fixed_fs, tau=tau, n_sweeps='auto')
@@ -507,7 +580,7 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                     n_cells=n_cells, duration=duration))
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, sweeps = run_matlab_pnevMCMC(
                     dff, fs=fs, tau=fixed_tau, n_sweeps='auto')
@@ -540,11 +613,16 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             print(f'  Failed for fs={fs}: {exc}')
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (params) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                       run_cascade=True):
+                       run_cascade=True, matlab_records=None):
 
     n_cells  = 50
     duration = 300
@@ -591,7 +669,7 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                      km(res['optim_spikes'])))})
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, _ = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
                 t_trad = time.time() - t0
@@ -631,11 +709,16 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             print(f'  Failed for kurtosis {label}: {exc}')
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (kurtosis) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
-                                      run_mine=True, run_cascade=True):
+                                      run_mine=True, run_cascade=True, matlab_records=None):
     
     n_cells  = 250
     duration = 300
@@ -683,23 +766,28 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
         _save_records(all_results, partial_path)
 
     if run_matlab:
-        print('\nRunning CaImAn MCMC...')
-        trad_spikes_all = []
-        for i in range(n_cells):
-            print(f'  Processing cell {i+1}/{n_cells}...', end='\r')
-            try:
-                t0 = time.time()
-                trad_spk, _, _, _ = run_matlab_pnevMCMC(
-                    dff[i:i+1], fs=fs, tau=tau, n_sweeps='auto')
-                time_taken = time.time() - t0
-                trad_spikes_all.append(trad_spk[0])
-                all_results.append(per_cell('CaImAn MCMC', i, trad_spk[0], time_taken))
-            except Exception as exc:
-                print(f'\n  CaImAn MCMC failed on cell {i}: {exc}')
-                trad_spikes_all.append(np.array([]))
-        print('\n  Finished.')
-        npz_spikes['trad_mcmc'] = trad_spikes_all
-        _save_records(all_results, partial_path)
+        if matlab_records is not None:
+            print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (firing rate) records...')
+            all_results.extend(matlab_records)
+            _save_records(all_results, partial_path)
+        else:
+            print('\nRunning CaImAn MCMC...')
+            trad_spikes_all = []
+            for i in range(n_cells):
+                print(f'  Processing cell {i+1}/{n_cells}...', end='\r')
+                try:
+                    t0 = time.time()
+                    trad_spk, _, _, _ = run_matlab_pnevMCMC(
+                        dff[i:i+1], fs=fs, tau=tau, n_sweeps='auto')
+                    time_taken = time.time() - t0
+                    trad_spikes_all.append(trad_spk[0])
+                    all_results.append(per_cell('CaImAn MCMC', i, trad_spk[0], time_taken))
+                except Exception as exc:
+                    print(f'\n  CaImAn MCMC failed on cell {i}: {exc}')
+                    trad_spikes_all.append(np.array([]))
+            print('\n  Finished.')
+            npz_spikes['trad_mcmc'] = trad_spikes_all
+            _save_records(all_results, partial_path)
 
     if run_oasis:
         print('\nRunning OASIS...')
@@ -794,20 +882,34 @@ def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
 
 def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
              run_oasis=True, run_cascade=True):
-    """Run all benchmark suites and write partial JSON files to data_dir."""
+
     os.makedirs(data_dir, exist_ok=True)
-    kw = dict(run_oasis=run_oasis, run_matlab=run_matlab,
-              run_mine=run_fmcsi, run_cascade=run_cascade)
+
+    ext = None
+    if run_matlab:
+        print(f'loading pre-computed caiman MCMC data from:\n  {_MATLAB_PRECOMPUTED_DIR}')
+        ext = _load_external_matlab_data()
+        total = sum(len(ext[k]) for k in ('sweeps', 'scalability', 'params', 'kurtosis', 'firing_rate'))
+        print(f'  Loaded {total} CaImAn MCMC records across all benchmarks.')
+
+    kw_shared = dict(run_oasis=run_oasis, run_mine=run_fmcsi, run_cascade=run_cascade,
+                     run_matlab=run_matlab)
+
     print('=== Sweeps benchmark ===')
-    benchmark_sweeps(data_dir, **kw)
+    benchmark_sweeps(data_dir, **kw_shared,
+                     matlab_records=ext['sweeps'] if ext else None)
     print('\n=== Scalability benchmark ===')
-    benchmark_scalability(data_dir, **kw)
+    benchmark_scalability(data_dir, **kw_shared,
+                          matlab_records=ext['scalability'] if ext else None)
     print('\n=== Parameter sensitivity benchmark ===')
-    benchmark_params(data_dir, **kw)
+    benchmark_params(data_dir, **kw_shared,
+                     matlab_records=ext['params'] if ext else None)
     print('\n=== Kurtosis sensitivity benchmark ===')
-    benchmark_kurtosis(data_dir, **kw)
+    benchmark_kurtosis(data_dir, **kw_shared,
+                       matlab_records=ext['kurtosis'] if ext else None)
     print('\n=== Firing-rate sensitivity benchmark ===')
-    benchmark_firing_rate_sensitivity(data_dir, **kw)
+    benchmark_firing_rate_sensitivity(data_dir, **kw_shared,
+                                      matlab_records=ext['firing_rate'] if ext else None)
     print('\n=== CASCADE 7.5 Hz vs 30 Hz comparison ===')
     benchmark_cascade_sample_rate(data_dir, run_cascade=run_cascade)
     print('\nTest mode complete.')
@@ -872,7 +974,6 @@ def _plot_cascade_comparison(ax, data_dir):
     if not os.path.exists(npz_path):
         ax.text(0.5, 0.5, 'No data\n(run --mode test)',
                 transform=ax.transAxes, ha='center', va='center', fontsize=7)
-        ax.set_title('CASCADE by sample rate')
         return
 
     data     = np.load(npz_path)
@@ -893,8 +994,8 @@ def _plot_cascade_comparison(ax, data_dir):
     for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
         parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
 
-    ax.set_xticks(pos)
-    ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
+    ax.set_xticks([(pos[0] + pos[1]) / 2, (pos[2] + pos[3]) / 2])
+    ax.set_xticklabels([r'$F_\beta$', 'CoSMIC'])
     ax.legend(handles=[
         Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
         Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
@@ -902,7 +1003,6 @@ def _plot_cascade_comparison(ax, data_dir):
        borderpad=0.4, labelspacing=0.2, frameon=False)
     ax.set_ylabel('score')
     ax.set_ylim(0, 1.1)
-    ax.set_title('CASCADE by sample rate')
 
 
 def plot_figure(data_dir=_DEFAULT_DATA_DIR):
@@ -931,6 +1031,16 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     combined = _tbl_concat(all_records)
 
+    ext = _load_external_matlab_data()
+    ext_benchmark_keys = ['sweeps', 'scalability', 'params', 'kurtosis']
+    ext_records = []
+    for key in ext_benchmark_keys:
+        ext_records.extend(ext[key])
+    if ext_records:
+        ext_tbl = _records_to_tbl(ext_records)
+        combined = _tbl_concat([combined, ext_tbl])
+        print(f'Injected {len(ext_records)} CaImAn MCMC records from external files.')
+
     fr_tbl = {}
     fr_path = os.path.join(data_dir, 'firing_rate_sensitivity_partial.npz')
     if os.path.exists(fr_path):
@@ -939,6 +1049,11 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             print(f'Loaded {fr_path}  ({_tbl_len(fr_tbl)} rows)')
         except Exception as exc:
             print(f'Error reading {fr_path}: {exc}')
+    fr_ext_records = ext['firing_rate']
+    if fr_ext_records:
+        fr_ext_tbl = _records_to_tbl(fr_ext_records)
+        fr_tbl = _tbl_concat([fr_tbl, fr_ext_tbl])
+        print(f'Injected {len(fr_ext_records)} CaImAn MCMC firing-rate records from external files.')
 
     f1_col   = 'F1'        if USE_STRICT_ACCURACY else 'F1_window'
     prec_col = 'Precision' if USE_STRICT_ACCURACY else 'Precision_window'

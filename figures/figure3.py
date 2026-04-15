@@ -57,11 +57,27 @@ _MODEL_ORDER = ['fMCSI', 'MATLAB', 'CASCADE', 'OASIS']
 USE_STRICT_ACCURACY = False
 BETA = 0.5
 
+#   'threshold' : return every frame where s > height * sigma (default)
+#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
+
+
+def _oasis_spikes_from_s(s, sigma, fs, height=0.2):
+    thresh = height * sigma
+    if OASIS_SPIKE_DETECTION == 'peaks':
+        min_dist = max(1, int(0.05 * fs))
+        peaks, _ = find_peaks(s, height=thresh, distance=min_dist)
+        return peaks / fs
+    return np.where(s > thresh)[0] / fs
+
+
 _CASCADE_CMP_COLOR_7P5  = 'tab:red'
 _CASCADE_CMP_COLOR_30   = 'tab:cyan'
 
 _GENO_LS         = {'Cux2': '-', 'Emx1': '--', 'tetO': ':'}
 _GENO_LS_DEFAULT = ':'
+
+_EXCLUDED_DATASETS = {'DS29-GCaMP7f-m-V1', 'DS32-GCaMP8s-m-V1', 'DS28-XCaMPgf-m-V1'}
 
 
 def _save_records(records, path):
@@ -412,7 +428,7 @@ def _run_and_save_allen_group(dff, true_spikes, fs, tau, label, data_dir,
         g = np.exp(-1 / (fs * tau))
         _, s, _, _, _ = deconvolve(dff[i], g=(g,), sn=sigmas[i], penalty=1)
         oasis_probs.append(s)
-        oasis_spikes.append(np.where(s > 0.2 * sigmas[i])[0] / fs)
+        oasis_spikes.append(_oasis_spikes_from_s(s, sigmas[i], fs))
     oasis_probs = np.array(oasis_probs)
     time_oasis  = time.time() - t0
 
@@ -694,6 +710,9 @@ def test_figure(data_dir, allen_data_dir, run_matlab=False):
             continue
         print(f"\n--- Processing {indicator.upper()} cell groups ---")
         for (experiment_name, fs_rounded, n_frames), gd in data_groups.items():
+            if experiment_name in _EXCLUDED_DATASETS:
+                print(f"\n  Skipping excluded dataset: {experiment_name}")
+                continue
             print(f"\n  Group {experiment_name}  {n_frames} frames @ {fs_rounded}Hz "
                   f"({gd['dff'].shape[0]} cells)")
             label = f"{experiment_name}_{indicator}_tau_{n_frames}frames_{fs_rounded}hz"
@@ -721,6 +740,9 @@ def test_fmcsi(data_dir, allen_data_dir):
             continue
         print(f"\n--- Processing {indicator.upper()} cell groups (fMCSI only) ---")
         for (experiment_name, fs_rounded, n_frames), gd in data_groups.items():
+            if experiment_name in _EXCLUDED_DATASETS:
+                print(f"\n  Skipping excluded dataset: {experiment_name}")
+                continue
             print(f"\n  Group {experiment_name}  {n_frames} frames @ {fs_rounded}Hz "
                   f"({gd['dff'].shape[0]} cells)")
             label = f"{experiment_name}_{indicator}_tau_{n_frames}frames_{fs_rounded}hz"
@@ -1724,6 +1746,9 @@ def plot_figure(data_dir):
 
     fmcsi_data_cache = {}
     for orig_basename, fmcsi_path in fmcsi_records_lookup.items():
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            print(f"Skipping excluded dataset: {orig_basename}")
+            continue
         try:
             fmcsi_data_cache[orig_basename] = _load_records(fmcsi_path)
         except Exception as exc:
@@ -1748,6 +1773,9 @@ def plot_figure(data_dir):
                          .replace('allen_data_results_cascade_', '')
                          .replace('allen_data_results_', '')
                          .replace('.npz', ''))
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            print(f"Skipping excluded dataset: {orig_basename}")
+            continue
         norm_label = normalize_label(orig_basename)
         label      = clean_label(norm_label)
         label_map[label]     = norm_label
@@ -1763,6 +1791,8 @@ def plot_figure(data_dir):
         alldata.extend(data)
 
     for orig_basename, fmcsi_recs in fmcsi_data_cache.items():
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            continue
         norm_label = normalize_label(orig_basename)
         label      = clean_label(norm_label)
         label_map.setdefault(label, norm_label)
@@ -1817,10 +1847,10 @@ def plot_figure(data_dir):
                               data_dir, cascade_lookup, file_path_map,
                               fmcsi_traces_lookup=fmcsi_traces_lookup)
 
-    fig = plt.figure(figsize=(10, 10), dpi=300)
-    gs  = gridspec.GridSpec(4, 4, figure=fig,
+    fig = plt.figure(figsize=(10, 7.5), dpi=300)
+    gs  = gridspec.GridSpec(3, 4, figure=fig,
                             hspace=0.52, wspace=0.44,
-                            height_ratios=[1, 1, 1, 1])
+                            height_ratios=[1, 1, 1])
 
     ax_rt = fig.add_subplot(gs[0:2, 0:2])
     _plot_combined_raster_trace(ax_rt, example_cells, window=60.0)
@@ -1848,16 +1878,16 @@ def plot_figure(data_dir):
     ax_f1 = fig.add_subplot(gs[2, 2:4])
     _plot_f1_violin(ax_f1, alldata, taus, f1_key=f1_key)
 
-    ax_roc_zoom = fig.add_subplot(gs[3, 0])
-    _plot_roc_by_zoom_combined(ax_roc_zoom, roc_data)
+    # ax_roc_zoom = fig.add_subplot(gs[3, 0])
+    # _plot_roc_by_zoom_combined(ax_roc_zoom, roc_data)
 
-    ax_roc_geno = fig.add_subplot(gs[3, 1])
-    _plot_roc_all_genotypes(ax_roc_geno, roc_data)
+    # ax_roc_geno = fig.add_subplot(gs[3, 1])
+    # _plot_roc_all_genotypes(ax_roc_geno, roc_data)
 
-    ax_strict_win = fig.add_subplot(gs[3, 2])
-    _plot_strict_vs_window_f1(ax_strict_win, alldata)
+    # ax_strict_win = fig.add_subplot(gs[3, 2])
+    # _plot_strict_vs_window_f1(ax_strict_win, alldata)
 
-    ax_cascade_cmp = fig.add_subplot(gs[3, 3])
+    # ax_cascade_cmp = fig.add_subplot(gs[3, 3])
 
     plt.tight_layout()
     out_svg = os.path.join(data_dir, 'allen_combined_figure.svg')
@@ -1870,8 +1900,22 @@ def plot_figure(data_dir):
 
 def print_stats(data_dir=_DEFAULT_DATA_DIR):
 
+    # Build fMCSI cache from separate files (same priority logic as plot_figure)
+    fmcsi_records_lookup = _build_fmcsi_records_lookup(data_dir)
+    fmcsi_data_cache = {}
+    for orig_basename, fmcsi_path in fmcsi_records_lookup.items():
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            continue
+        try:
+            fmcsi_data_cache[orig_basename] = _load_records(fmcsi_path)
+        except Exception as exc:
+            print(f"Warning: could not load {fmcsi_path}: {exc}")
+            fmcsi_data_cache[orig_basename] = []
+
     alldata = []
     for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
+        if 'allen_data_results_fmcsi_' in fpath:
+            continue
         try:
             data = _load_records(fpath)
         except Exception as exc:
@@ -1881,14 +1925,34 @@ def print_stats(data_dir=_DEFAULT_DATA_DIR):
                          .replace('allen_data_results_cascade_', '')
                          .replace('allen_data_results_', '')
                          .replace('.npz', ''))
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            continue
+        is_cascade = 'allen_data_results_cascade_' in fpath
+        if not is_cascade and orig_basename in fmcsi_data_cache:
+            fmcsi_models = {r.get('model') for r in fmcsi_data_cache[orig_basename]}
+            data = [d for d in data if d.get('model') not in fmcsi_models]
         geno = get_genotype(orig_basename)
+        label = clean_label(normalize_label(orig_basename))
         for d in data:
-            d['label']    = clean_label(normalize_label(orig_basename))
+            d['label']    = label
             d['genotype'] = geno
             d['zoom']     = get_zoom_for_label(d['label'])
             d['fbeta']        = _fbeta(d.get('precision',        0.0), d.get('recall',        0.0))
             d['fbeta_window'] = _fbeta(d.get('precision_window', 0.0), d.get('recall_window', 0.0))
         alldata.extend(data)
+
+    for orig_basename, fmcsi_recs in fmcsi_data_cache.items():
+        if any(orig_basename.startswith(ds) for ds in _EXCLUDED_DATASETS):
+            continue
+        geno  = get_genotype(orig_basename)
+        label = clean_label(normalize_label(orig_basename))
+        for d in fmcsi_recs:
+            d['label']    = label
+            d['genotype'] = geno
+            d['zoom']     = get_zoom_for_label(label)
+            d['fbeta']        = _fbeta(d.get('precision',        0.0), d.get('recall',        0.0))
+            d['fbeta_window'] = _fbeta(d.get('precision_window', 0.0), d.get('recall_window', 0.0))
+        alldata.extend(fmcsi_recs)
 
     if not alldata:
         print("No data found. Run --mode test first.")
@@ -1920,14 +1984,7 @@ def print_stats(data_dir=_DEFAULT_DATA_DIR):
     unique_labels  = list(set(d['label'] for d in alldata))
     label_tau_map  = {d['label']: d.get('tau', 1.2) for d in alldata}
     label_geno_map = {d['label']: d.get('genotype', 'Other') for d in alldata}
-    file_path_map  = {}
-    for fpath in _glob.glob(os.path.join(data_dir, 'allen_data_results_*.npz')):
-        orig = (os.path.basename(fpath)
-                .replace('allen_data_results_cascade_', '')
-                .replace('allen_data_results_', '')
-                .replace('.npz', ''))
-        label = clean_label(normalize_label(orig))
-        file_path_map.setdefault(label, orig)
+    file_path_map  = {d['label']: d['label'] for d in alldata}
 
     print('\nComputing ROC / AUC (may take a moment)...')
     roc_data = _get_roc_data(unique_labels, label_tau_map, label_geno_map,
