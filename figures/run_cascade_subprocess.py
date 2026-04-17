@@ -26,11 +26,32 @@ import time
 import numpy as np
 from scipy.signal import find_peaks
 
-# Device selection must happen before TF/Keras are imported.
+_device_arg = 'gpu'
 if '--device' in sys.argv:
     _dev_idx = sys.argv.index('--device')
-    if _dev_idx + 1 < len(sys.argv) and sys.argv[_dev_idx + 1] == 'cpu':
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    if _dev_idx + 1 < len(sys.argv):
+        _device_arg = sys.argv[_dev_idx + 1]
+
+if _device_arg == 'cpu':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+else:
+
+    os.environ.pop('CUDA_VISIBLE_DEVICES', None)
+
+    os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+    try:
+        import tensorflow as tf
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            for _gpu in gpus:
+                tf.config.experimental.set_memory_growth(_gpu, True)
+            print(f"[cascade-subprocess] GPU(s) visible: {[g.name for g in gpus]}")
+        else:
+            print("[cascade-subprocess] WARNING: no GPU visible to TensorFlow — "
+                  "running on CPU. If GPU was intended, check CUDA/driver install.")
+    except Exception as _gpu_exc:
+        print(f"[cascade-subprocess] Could not configure GPU: {_gpu_exc}")
 
 try:
     import keras.engine.input_layer as _kil
@@ -55,7 +76,17 @@ except Exception as _e:
     pass
 
 
-def _probs_to_spikes(probs, fs, height=0.2):
+#   'peaks'     : find local maxima above `height` with a minimum inter-peak
+#                 distance of 50 ms (original CASCADE behaviour).
+#   'threshold' : return every frame whose probability exceeds `height`,
+#                 equivalent to the frame-by-frame threshold used by OASIS.
+CASCADE_SPIKE_DETECTION = 'peaks'
+
+
+def _probs_to_spikes(probs, fs, height=0.5):
+
+    if CASCADE_SPIKE_DETECTION == 'threshold':
+        return np.where(probs > height)[0] / fs
 
     min_dist = max(1, int(0.05 * fs))
     peaks, _ = find_peaks(probs, height=height, distance=min_dist)
@@ -153,7 +184,7 @@ def main():
                         help='CASCADE model name (inference mode, optional)')
     parser.add_argument('--device', default='gpu', choices=['cpu', 'gpu'],
                         help='Hardware device for inference: cpu or gpu (default: gpu)')
-    # loo-predict mode
+
     parser.add_argument('--raster-cells', dest='raster_cells',
                         help='Path to raster_cells.npz (loo-predict mode)')
     parser.add_argument('--loo-models-dir', dest='loo_models_dir',

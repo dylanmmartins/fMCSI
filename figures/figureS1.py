@@ -36,13 +36,13 @@ COLORS = {
 }
 
 OASIS_THRESHOLDS   = np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0])
-CASCADE_THRESHOLDS = np.array([0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0])
+CASCADE_THRESHOLDS = np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0])
 
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'figS1')
 
-# True  -> sweep sigma multipliers: s > thresh * sigma  (matches figure1.py / figure3.py)
-# False -> sweep fixed heights via find_peaks (same method as CASCADE)
-OASIS_SIGMA_THRESH = True
+#   'threshold' : return every frame where s > thresh * sigma (default, matches figure1–4)
+#   'peaks'     : find local maxima above thresh * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
 
 _NPZ_NAME = 'figS1_threshold_sweep.npz'
 
@@ -84,7 +84,7 @@ def _oasis_spikes(dff, fs, tau, n_cells):
 
 
 def _probs_to_spikes(probs, fs, height=0.2):
-    """Convert a 1-D probability trace to spike times in seconds."""
+
     min_dist = max(1, int(0.05 * fs))
     peaks, _ = find_peaks(probs, height=height, distance=min_dist)
     return peaks / fs
@@ -99,7 +99,7 @@ def _fbeta(precision, recall):
 
 
 def _compute_metrics(true_spikes, spikes_list):
-    prec, rec, _ = fMCSI.compute_accuracy_strict(true_spikes, spikes_list)
+    prec, rec, _ = fMCSI.helpers.compute_accuracy_window(true_spikes, spikes_list)
     fb           = _fbeta(prec, rec)
     cosmic       = compute_cosmic(true_spikes, spikes_list, FS)
     return prec, rec, fb, cosmic
@@ -119,7 +119,7 @@ def run_test(data_dir='.', run_oasis=True, run_cascade=True):
         'true_spikes':        np.array(true_spikes, dtype=object),
         'oasis_thresholds':   OASIS_THRESHOLDS,
         'cascade_thresholds': CASCADE_THRESHOLDS,
-        'oasis_sigma_thresh': np.bool_(OASIS_SIGMA_THRESH),
+        'oasis_spike_detection': OASIS_SPIKE_DETECTION,
     }
 
     if run_oasis:
@@ -136,11 +136,13 @@ def run_test(data_dir='.', run_oasis=True, run_cascade=True):
 
         print('  sweeping thresholds:')
         for ti, thresh in enumerate(OASIS_THRESHOLDS):
-            if OASIS_SIGMA_THRESH:
+            if OASIS_SPIKE_DETECTION == 'threshold':
                 spikes = [np.where(s > thresh * sigmas[i])[0] / FS
                           for i, s in enumerate(s_list)]
             else:
-                spikes = [_probs_to_spikes(s, FS, height=thresh) for s in s_list]
+                min_dist = max(1, int(0.05 * FS))
+                spikes = [np.array(find_peaks(s, height=thresh * sigmas[i], distance=min_dist)[0]) / FS
+                          for i, s in enumerate(s_list)]
             prec, rec, fb, cosmic = _compute_metrics(true_spikes, spikes)
             oasis_precision[ti] = prec
             oasis_recall[ti]    = rec
@@ -208,10 +210,8 @@ def plot_figure(data_dir='.'):
     has_oasis   = 'oasis_precision'   in res
     has_cascade = 'cascade_precision' in res
 
-    oasis_sigma_thresh = bool(res['oasis_sigma_thresh']) if 'oasis_sigma_thresh' in res else True
     oasis_thresholds   = res['oasis_thresholds']   if 'oasis_thresholds'   in res else res['thresholds']
     cascade_thresholds = res['cascade_thresholds'] if 'cascade_thresholds' in res else res['thresholds']
-    # oasis_xlabel       = 'Sigma multiplier' if oasis_sigma_thresh else 'Detection threshold'
 
     metrics = [
         ('precision', 'Precision'),
@@ -251,7 +251,10 @@ def plot_figure(data_dir='.'):
                             color=color, alpha=0.18, zorder=1)
             ax.plot(thresholds, mean, '.-',
                     color=color, lw=1.2, ms=4, zorder=3)
-            ax.axvline(0.2, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
+            if method == 'OASIS' and OASIS_SPIKE_DETECTION == 'peaks':
+                ax.axvline(1.0, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
+            else:
+                ax.axvline(0.5, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
 
             ax.set_ylim([0, 1.08])
             ax.set_xlim([thresholds[0], thresholds[-1]])
@@ -277,12 +280,44 @@ def plot_figure(data_dir='.'):
     plt.close(fig)
 
 
+def print_stats(data_dir=_DEFAULT_DATA_DIR):
+
+    path = os.path.join(data_dir, _NPZ_NAME)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f'Results not found at {path}. Run --mode test first.')
+    res = np.load(path, allow_pickle=True)
+
+    oasis_thresholds   = res['oasis_thresholds']   if 'oasis_thresholds'   in res else res['thresholds']
+    cascade_thresholds = res['cascade_thresholds'] if 'cascade_thresholds' in res else res['thresholds']
+
+    rows = []
+    if 'oasis_fbeta' in res:
+        rows.append(('OASIS',   'oasis',   oasis_thresholds))
+    if 'cascade_fbeta' in res:
+        rows.append(('CASCADE', 'cascade', cascade_thresholds))
+
+    print('\n' + '='*72)
+    print('FIGURE S1 STATISTICS — maximum performance vs detection threshold')
+    print('='*72)
+
+    for method, prefix, thresholds in rows:
+        print(f'\n--- {method} ---')
+        for metric_key, metric_label in [('fbeta', 'F_beta'), ('cosmic', 'CosMIC')]:
+            arr  = res[f'{prefix}_{metric_key}']           # shape (n_thresh, n_cells)
+            mean = np.nanmean(arr, axis=1)                 # shape (n_thresh,)
+            std  = np.nanstd(arr,  axis=1)
+            best_idx = int(np.argmax(mean))
+            print(f'  Max mean {metric_label:>8}: {mean[best_idx]:.3f}  '
+                  f'(std={std[best_idx]:.3f})  '
+                  f'at threshold={thresholds[best_idx]:.3f}')
+
+
 if __name__ == '__main__':
-    
+
     parser = argparse.ArgumentParser(
         description='Figure S1: threshold sensitivity for OASIS and CASCADE'
     )
-    parser.add_argument('--mode', required=True, choices=['test', 'plot'],
+    parser.add_argument('--mode', required=True, choices=['test', 'plot', 'print'],
                         help='"test" runs inference and writes results; '
                              '"plot" loads results and generates the figure')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
@@ -297,5 +332,7 @@ if __name__ == '__main__':
             run_oasis   = not args.no_oasis,
             run_cascade = not args.no_cascade,
         )
-    else:
+    elif args.mode == 'plot':
         plot_figure(data_dir=args.data_dir)
+    else:
+        print_stats(data_dir=args.data_dir)

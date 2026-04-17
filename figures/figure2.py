@@ -13,6 +13,7 @@ Written DMM, March 2026
 """
 
 import argparse
+import json
 import os
 import subprocess
 import time
@@ -27,6 +28,8 @@ import fMCSI.helpers as helpers
 from run_pnev_MCMC import run_matlab_pnevMCMC
 from simulation_helpers import generate_synthetic_data
 
+_MATLAB_PRECOMPUTED_DIR = '/home/dylan/Fast2/spike_deconv/sweeping_benchmarks/all_other_methods'
+
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig2')
 
 mpl.rcParams['axes.spines.top']  = False
@@ -38,7 +41,7 @@ mpl.rcParams['font.size']    = 7
 np.random.seed(3)
 
 BETA = 0.5
-USE_STRICT_ACCURACY = True
+USE_STRICT_ACCURACY = False
 
 COLORS = {
     'fMCSI':        '#4C72B0',
@@ -47,6 +50,20 @@ COLORS = {
     'CASCADE_GPU':  '#8172B3',
     'CASCADE_CPU':  '#B39DDB',
 }
+
+
+#   'threshold' : return every frame where s > height * sigma (default)
+#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
+OASIS_SPIKE_DETECTION = 'peaks'
+
+
+def _oasis_spikes_from_s(s, sigma, fs, height=1.0):
+    thresh = height * sigma
+    if OASIS_SPIKE_DETECTION == 'peaks':
+        min_dist = max(1, int(0.05 * fs))
+        peaks, _ = find_peaks(s, height=thresh, distance=min_dist)
+        return peaks / fs
+    return np.where(s > thresh)[0] / fs
 
 
 def _run_cascade_inference(dff, fs, data_dir, prefix, device='gpu'):
@@ -103,18 +120,31 @@ def _row(exp, model, tau_, fs_, time_, m, sweeps=0, n_cells=None, duration=None,
 
 def _save_records(records, path):
     if not records:
-        np.savez(path)
+        if not os.path.exists(path):
+            np.savez(path)
         return
-    keys = list(dict.fromkeys(k for r in records for k in r))
-    out = {}
-    for k in keys:
-        vals = [r.get(k, None) for r in records]
-        if any(isinstance(v, str) for v in vals if v is not None):
-            out[k] = np.array([str(v) if v is not None else '' for v in vals], dtype=object)
-        else:
-            out[k] = np.array([float(v) if v is not None else np.nan for v in vals],
-                               dtype=np.float64)
-    np.savez(path, **out)
+
+    new_tbl = _records_to_tbl(records)
+
+    if os.path.exists(path):
+        try:
+            existing = _load_records(path)
+            if existing and 'Model' in existing and 'Model' in new_tbl:
+                new_models = set(str(m) for m in new_tbl['Model'])
+                mask = np.array([str(m) not in new_models for m in existing['Model']], dtype=bool)
+                if mask.sum() > 0:
+                    existing_filtered = {k: v[mask] for k, v in existing.items()}
+                    combined = _tbl_concat([existing_filtered, new_tbl])
+                else:
+                    combined = new_tbl
+            else:
+                combined = new_tbl
+        except Exception:
+            combined = new_tbl
+    else:
+        combined = new_tbl
+
+    np.savez(path, **combined)
 
 
 def _load_records(path):
@@ -135,6 +165,21 @@ def _tbl_filter(tbl, col, val):
 def _tbl_sort(tbl, col):
     idx = np.argsort(tbl[col].astype(float))
     return {k: v[idx] for k, v in tbl.items()}
+
+
+def _records_to_tbl(records):
+    if not records:
+        return {}
+    keys = list(dict.fromkeys(k for r in records for k in r))
+    out = {}
+    for k in keys:
+        vals = [r.get(k, None) for r in records]
+        if any(isinstance(v, str) for v in vals if v is not None):
+            out[k] = np.array([str(v) if v is not None else '' for v in vals], dtype=object)
+        else:
+            out[k] = np.array([float(v) if v is not None else np.nan for v in vals],
+                               dtype=np.float64)
+    return out
 
 
 def _tbl_concat(tbls):
@@ -170,13 +215,44 @@ def _oasis_spikes(dff, fs, tau, n_cells):
     for i in range(n_cells):
         g = np.exp(-1 / (fs * tau))
         c, s, _, _, _ = deconvolve(dff[i], g=(g,), sn=sigmas[i], penalty=1)
-        spikes.append(np.where(s > 0.2 * sigmas[i])[0] / fs)
+        spikes.append(_oasis_spikes_from_s(s, sigmas[i], fs))
         calcium.append(c)
     return spikes, calcium
 
 
+def _trad_mcmc_from_json(json_path):
+
+    if not os.path.exists(json_path):
+        print(f'  WARNING: precomputed file not found: {json_path}')
+        return []
+    with open(json_path) as f:
+        data = json.load(f)
+    out = []
+    for r in data:
+        key = 'Model' if 'Model' in r else 'model'
+        if r.get(key) == 'Trad MCMC':
+            r = dict(r)
+            r[key] = 'CaImAn MCMC'
+            out.append(r)
+    return out
+
+
+def _load_external_matlab_data():
+
+    d = _MATLAB_PRECOMPUTED_DIR
+    return {
+        'sweeps':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_sweeps_partial.json')),
+        'scalability':  _trad_mcmc_from_json(os.path.join(d, 'benchmark_scalability_partial.json')),
+        'params':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_params_partial.json')),
+        'kurtosis':     _trad_mcmc_from_json(os.path.join(d, 'benchmark_kurtosis_partial.json')),
+        'firing_rate':  _trad_mcmc_from_json(os.path.join(d, 'firing_rate_sensitivity_partial.json')),
+        'sweeps_traces_npz':      os.path.join(d, 'benchmark_sweeps_traces.npz'),
+        'firing_rate_traces_npz': os.path.join(d, 'firing_rate_sensitivity_traces.npz'),
+    }
+
+
 def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                     run_cascade=True):
+                     run_cascade=True, matlab_records=None):
 
     n_cells     = 50
     duration    = 600
@@ -245,7 +321,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 trad_spikes, _, _, _ = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps=s)
@@ -262,6 +338,11 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
 
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (sweeps) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     npz_save = {'dff': dff, 'fs': fs, 'tau': tau}
     for k, v in npz_spikes.items():
         npz_save[f'spikes_{k}'] = np.array(v, dtype=object)
@@ -272,7 +353,7 @@ def benchmark_sweeps(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
 
 
 def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                           run_cascade=True):
+                           run_cascade=True, matlab_records=None):
 
     fs  = 30.0
     tau = 1.2
@@ -310,7 +391,7 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 _, _, _, sweeps = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
@@ -377,7 +458,7 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
             except Exception as exc:
                 print(f'    fMCSI failed: {exc}')
 
-        if run_matlab:
+        if run_matlab and matlab_records is None:
             try:
                 t0 = time.time()
                 _, _, _, sweeps = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
@@ -418,11 +499,16 @@ def benchmark_scalability(data_dir, run_oasis=True, run_matlab=True, run_mine=Tr
 
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (scalability) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                     run_cascade=True):
+                     run_cascade=True, matlab_records=None):
     
     n_cells  = 50
     duration = 300
@@ -454,7 +540,7 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                     n_cells=n_cells, duration=duration))
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, sweeps = run_matlab_pnevMCMC(
                     dff, fs=fixed_fs, tau=tau, n_sweeps='auto')
@@ -507,7 +593,7 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                     n_cells=n_cells, duration=duration))
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, sweeps = run_matlab_pnevMCMC(
                     dff, fs=fs, tau=fixed_tau, n_sweeps='auto')
@@ -540,11 +626,16 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             print(f'  Failed for fs={fs}: {exc}')
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (params) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                       run_cascade=True):
+                       run_cascade=True, matlab_records=None):
 
     n_cells  = 50
     duration = 300
@@ -591,7 +682,7 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                      km(res['optim_spikes'])))})
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
-            if run_matlab:
+            if run_matlab and matlab_records is None:
                 t0 = time.time()
                 trad_spikes, _, _, _ = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
                 t_trad = time.time() - t0
@@ -631,11 +722,16 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
             print(f'  Failed for kurtosis {label}: {exc}')
         _save_records(results, partial_path)
 
+    if run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (kurtosis) records...')
+        results.extend(matlab_records)
+        _save_records(results, partial_path)
+
     return
 
 
 def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
-                                      run_mine=True, run_cascade=True):
+                                      run_mine=True, run_cascade=True, matlab_records=None):
     
     n_cells  = 250
     duration = 300
@@ -683,23 +779,28 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
         _save_records(all_results, partial_path)
 
     if run_matlab:
-        print('\nRunning CaImAn MCMC...')
-        trad_spikes_all = []
-        for i in range(n_cells):
-            print(f'  Processing cell {i+1}/{n_cells}...', end='\r')
-            try:
-                t0 = time.time()
-                trad_spk, _, _, _ = run_matlab_pnevMCMC(
-                    dff[i:i+1], fs=fs, tau=tau, n_sweeps='auto')
-                time_taken = time.time() - t0
-                trad_spikes_all.append(trad_spk[0])
-                all_results.append(per_cell('CaImAn MCMC', i, trad_spk[0], time_taken))
-            except Exception as exc:
-                print(f'\n  CaImAn MCMC failed on cell {i}: {exc}')
-                trad_spikes_all.append(np.array([]))
-        print('\n  Finished.')
-        npz_spikes['trad_mcmc'] = trad_spikes_all
-        _save_records(all_results, partial_path)
+        if matlab_records is not None:
+            print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (firing rate) records...')
+            all_results.extend(matlab_records)
+            _save_records(all_results, partial_path)
+        else:
+            print('\nRunning CaImAn MCMC...')
+            trad_spikes_all = []
+            for i in range(n_cells):
+                print(f'  Processing cell {i+1}/{n_cells}...', end='\r')
+                try:
+                    t0 = time.time()
+                    trad_spk, _, _, _ = run_matlab_pnevMCMC(
+                        dff[i:i+1], fs=fs, tau=tau, n_sweeps='auto')
+                    time_taken = time.time() - t0
+                    trad_spikes_all.append(trad_spk[0])
+                    all_results.append(per_cell('CaImAn MCMC', i, trad_spk[0], time_taken))
+                except Exception as exc:
+                    print(f'\n  CaImAn MCMC failed on cell {i}: {exc}')
+                    trad_spikes_all.append(np.array([]))
+            print('\n  Finished.')
+            npz_spikes['trad_mcmc'] = trad_spikes_all
+            _save_records(all_results, partial_path)
 
     if run_oasis:
         print('\nRunning OASIS...')
@@ -742,12 +843,7 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
     return
 
 def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
-    """Per-cell Fβ and CoSMIC distributions for CASCADE at 7.5 Hz vs 30 Hz.
 
-    Generates the same underlying spike trains, then synthesises calcium traces
-    at each frame rate so that the only variable is imaging sample rate.
-    Saves cascade_7p5_vs_30hz_data.npz with arrays fb_7, fb_30, cosmic_7, cosmic_30.
-    """
     from simulation_helpers import generate_synthetic_data
 
     n_cells  = 50
@@ -799,20 +895,34 @@ def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
 
 def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
              run_oasis=True, run_cascade=True):
-    """Run all benchmark suites and write partial JSON files to data_dir."""
+
     os.makedirs(data_dir, exist_ok=True)
-    kw = dict(run_oasis=run_oasis, run_matlab=run_matlab,
-              run_mine=run_fmcsi, run_cascade=run_cascade)
+
+    ext = None
+    if run_matlab:
+        print(f'loading pre-computed caiman MCMC data from:\n  {_MATLAB_PRECOMPUTED_DIR}')
+        ext = _load_external_matlab_data()
+        total = sum(len(ext[k]) for k in ('sweeps', 'scalability', 'params', 'kurtosis', 'firing_rate'))
+        print(f'  Loaded {total} CaImAn MCMC records across all benchmarks.')
+
+    kw_shared = dict(run_oasis=run_oasis, run_mine=run_fmcsi, run_cascade=run_cascade,
+                     run_matlab=run_matlab)
+
     print('=== Sweeps benchmark ===')
-    benchmark_sweeps(data_dir, **kw)
+    benchmark_sweeps(data_dir, **kw_shared,
+                     matlab_records=ext['sweeps'] if ext else None)
     print('\n=== Scalability benchmark ===')
-    benchmark_scalability(data_dir, **kw)
+    benchmark_scalability(data_dir, **kw_shared,
+                          matlab_records=ext['scalability'] if ext else None)
     print('\n=== Parameter sensitivity benchmark ===')
-    benchmark_params(data_dir, **kw)
+    benchmark_params(data_dir, **kw_shared,
+                     matlab_records=ext['params'] if ext else None)
     print('\n=== Kurtosis sensitivity benchmark ===')
-    benchmark_kurtosis(data_dir, **kw)
+    benchmark_kurtosis(data_dir, **kw_shared,
+                       matlab_records=ext['kurtosis'] if ext else None)
     print('\n=== Firing-rate sensitivity benchmark ===')
-    benchmark_firing_rate_sensitivity(data_dir, **kw)
+    benchmark_firing_rate_sensitivity(data_dir, **kw_shared,
+                                      matlab_records=ext['firing_rate'] if ext else None)
     print('\n=== CASCADE 7.5 Hz vs 30 Hz comparison ===')
     benchmark_cascade_sample_rate(data_dir, run_cascade=run_cascade)
     print('\nTest mode complete.')
@@ -877,20 +987,25 @@ def _plot_cascade_comparison(ax, data_dir):
     if not os.path.exists(npz_path):
         ax.text(0.5, 0.5, 'No data\n(run --mode test)',
                 transform=ax.transAxes, ha='center', va='center', fontsize=7)
-        ax.set_title('CASCADE by sample rate')
         return
 
     data     = np.load(npz_path)
     fb_7     = data['fb_7'];     fb_30     = data['fb_30']
     cosmic_7 = data['cosmic_7']; cosmic_30 = data['cosmic_30']
 
-    pos      = [1, 2, 3.15, 4.15]
-    datasets = [
+    all_pos      = [1, 2, 3.15, 4.15]
+    all_datasets = [
         (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
         (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
         (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
         (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
     ]
+    pos      = [p for p, (d, _) in zip(all_pos, all_datasets) if len(d) > 0]
+    datasets = [(d, c) for d, c in all_datasets if len(d) > 0]
+    if not datasets:
+        ax.text(0.5, 0.5, 'No finite data', transform=ax.transAxes,
+                ha='center', va='center', fontsize=7)
+        return
     parts = ax.violinplot([d for d, _ in datasets], positions=pos,
                           showmedians=True, widths=0.65)
     for pc, (_, col) in zip(parts['bodies'], datasets):
@@ -898,8 +1013,8 @@ def _plot_cascade_comparison(ax, data_dir):
     for partname in ('cbars', 'cmins', 'cmaxes', 'cmedians'):
         parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
 
-    ax.set_xticks(pos)
-    ax.set_xticklabels([r'$F_\beta$', r'$F_\beta$', 'CoSMIC', 'CoSMIC'])
+    ax.set_xticks([(pos[0] + pos[1]) / 2, (pos[2] + pos[3]) / 2])
+    ax.set_xticklabels([r'$F_\beta$', 'CoSMIC'])
     ax.legend(handles=[
         Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
         Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
@@ -907,7 +1022,6 @@ def _plot_cascade_comparison(ax, data_dir):
        borderpad=0.4, labelspacing=0.2, frameon=False)
     ax.set_ylabel('score')
     ax.set_ylim(0, 1.1)
-    ax.set_title('CASCADE by sample rate')
 
 
 def plot_figure(data_dir=_DEFAULT_DATA_DIR):
@@ -936,6 +1050,16 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     combined = _tbl_concat(all_records)
 
+    ext = _load_external_matlab_data()
+    ext_benchmark_keys = ['sweeps', 'scalability', 'params', 'kurtosis']
+    ext_records = []
+    for key in ext_benchmark_keys:
+        ext_records.extend(ext[key])
+    if ext_records:
+        ext_tbl = _records_to_tbl(ext_records)
+        combined = _tbl_concat([combined, ext_tbl])
+        print(f'Injected {len(ext_records)} CaImAn MCMC records from external files.')
+
     fr_tbl = {}
     fr_path = os.path.join(data_dir, 'firing_rate_sensitivity_partial.npz')
     if os.path.exists(fr_path):
@@ -944,6 +1068,11 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             print(f'Loaded {fr_path}  ({_tbl_len(fr_tbl)} rows)')
         except Exception as exc:
             print(f'Error reading {fr_path}: {exc}')
+    fr_ext_records = ext['firing_rate']
+    if fr_ext_records:
+        fr_ext_tbl = _records_to_tbl(fr_ext_records)
+        fr_tbl = _tbl_concat([fr_tbl, fr_ext_tbl])
+        print(f'Injected {len(fr_ext_records)} CaImAn MCMC firing-rate records from external files.')
 
     f1_col   = 'F1'        if USE_STRICT_ACCURACY else 'F1_window'
     prec_col = 'Precision' if USE_STRICT_ACCURACY else 'Precision_window'
@@ -952,9 +1081,9 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     scaling_stats = []
 
     mosaic = [
-        ['sweeps',  'cells',   'duration', 'cascade_cmp'],
-        ['tau_p',   'tau_r',   'fs_p',     'fs_r'       ],
-        ['kurt_f',  'kurt_p',  'kurt_r',   'kurt_cosmic' ],
+        ['sweeps',  'cells',    'duration',  'cascade_cmp'],
+        ['tau_p',   'tau_r',    'kurt_p',    'kurt_r'     ],
+        ['fs_p',    'fs_r',     'fs_fb',     'fs_cosmic'  ],
     ]
     fig, axes = plt.subplot_mosaic(mosaic, figsize=(7, 4.5), dpi=300)
 
@@ -964,14 +1093,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             continue
         subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Sweeps'), 'Sweeps')
         if _tbl_len(subset) > 0:
-            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 3600.0,
+            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
                                 '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Sweeps'], subset['Time'])
             scaling_stats.append({'Experiment': 'Sweeps', 'Model': model,
                                    'Variable': 'Sweeps', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['sweeps'].set_xlabel('# sweeps')
-    axes['sweeps'].set_ylabel('compute time (hr)')
+    axes['sweeps'].set_ylabel('compute time (min)')
     axes['sweeps'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
@@ -983,14 +1112,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Cell_Scaling'), 'N_Cells')
         if _tbl_len(subset) > 0:
-            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 3600.,
+            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 60.,
                                '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['N_Cells'], subset['Time'])
             scaling_stats.append({'Experiment': 'Cell_Scaling', 'Model': model,
                                    'Variable': 'N_Cells', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['cells'].set_xlabel('# cells')
-    axes['cells'].set_ylabel('compute time (hr)')
+    axes['cells'].set_ylabel('compute time (min)')
     axes['cells'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
@@ -1002,14 +1131,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Duration_Scaling'), 'Duration')
         if _tbl_len(subset) > 0:
-            axes['duration'].plot(subset['Duration'] / 3600., subset['Time'] / 3600.,
+            axes['duration'].plot(subset['Duration'] / 3600., subset['Time'] / 60.,
                                   '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Duration'], subset['Time'])
             scaling_stats.append({'Experiment': 'Duration_Scaling', 'Model': model,
                                    'Variable': 'Duration', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
     axes['duration'].set_xlabel('recording duration (hr)')
-    axes['duration'].set_ylabel('compute time (hr)')
+    axes['duration'].set_ylabel('compute time (min)')
     axes['duration'].set_yscale('log')
     _set_three_ticks_x(axes['duration'])
 
@@ -1019,7 +1148,6 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             continue
         for exp, xcol, ax_p, ax_r in [
             ('Tau_Sensitivity', 'Tau', 'tau_p', 'tau_r'),
-            ('Fs_Sensitivity',  'Fs',  'fs_p',  'fs_r'),
         ]:
             subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', exp), xcol)
             if model.startswith('CASCADE'):
@@ -1030,10 +1158,27 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
                                 color=COLORS.get(model, 'k'))
                 axes[ax_r].plot(subset[xcol], subset[rec_col],  '.-',
                                 color=COLORS.get(model, 'k'))
+        subset_fs = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        subset_fs = {k: v[np.array(subset_fs['Fs'], dtype=float) != 100.0]
+                     for k, v in subset_fs.items()}
+        if model.startswith('CASCADE'):
+            subset_fs = _filter_cascade_shared_x(
+                subset_fs, _tbl_filter(combined, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        if _tbl_len(subset_fs) > 0:
+            fb_fs = _fbeta(subset_fs[prec_col], subset_fs[rec_col])
+            axes['fs_p'].plot(subset_fs['Fs'], subset_fs[prec_col], '.-',
+                              color=COLORS.get(model, 'k'))
+            axes['fs_r'].plot(subset_fs['Fs'], subset_fs[rec_col],  '.-',
+                              color=COLORS.get(model, 'k'))
+            axes['fs_fb'].plot(subset_fs['Fs'], fb_fs, '.-',
+                               color=COLORS.get(model, 'k'))
+            axes['fs_cosmic'].plot(subset_fs['Fs'], subset_fs['COSMIC'], '.-',
+                                   color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
-        ('tau_p', 'tau (s)', 'Precision'), ('tau_r', 'tau (s)', 'Recall'),
-        ('fs_p',  'Hz',      'precision'), ('fs_r',  'Hz',      'recall'),
+        ('tau_p',     'tau (s)', 'Precision'),   ('tau_r',     'tau (s)', 'Recall'),
+        ('fs_p',      'Hz',      'Precision'),   ('fs_r',      'Hz',      'Recall'),
+        ('fs_fb',     'Hz',      r'$F_\beta$'),  ('fs_cosmic', 'Hz',      'CosMIC'),
     ]:
         axes[ax_key].set_xlabel(xlabel)
         axes[ax_key].set_ylabel(ylabel)
@@ -1052,21 +1197,16 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'), 'Mean_Kurtosis')
         if _tbl_len(subset) > 0:
-            fb = _fbeta(subset[prec_col], subset[rec_col])
-            axes['kurt_f'].plot(subset['Mean_Kurtosis'], fb, '.-',
-                                color=COLORS.get(model, 'k'))
             axes['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
                                 color=COLORS.get(model, 'k'))
-            axes['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col],  '.-',
+            axes['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col], '.-',
                                 color=COLORS.get(model, 'k'))
-            axes['kurt_cosmic'].plot(subset['Mean_Kurtosis'], subset['COSMIC'], '.-',
-                                     color=COLORS.get(model, 'k'))
 
-    for ax_key, ylabel in [
-        ('kurt_f',      r'$F_\beta$'), ('kurt_p', 'precision'),
-        ('kurt_r',      'recall'),     ('kurt_cosmic', 'CosMIC score'),
+    for ax_key, xlabel, ylabel in [
+        ('kurt_p', 'mean kurtosis', 'Precision'),
+        ('kurt_r', 'mean kurtosis', 'Recall'),
     ]:
-        axes[ax_key].set_xlabel('mean kurtosis')
+        axes[ax_key].set_xlabel(xlabel)
         axes[ax_key].set_ylabel(ylabel)
         axes[ax_key].set_ylim(-0.05, 1.05)
         _set_three_ticks_x(axes[ax_key])

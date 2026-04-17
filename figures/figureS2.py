@@ -29,7 +29,7 @@ _METHODS = {
 _METHOD_ORDER  = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
 _TRACE_METHODS = ['fmcsi', 'matlab', 'oasis', 'cascade_loo']
 
-SENSORS = ['GCaMP7f', 'GCaMP8s', 'GCaMP8m', 'GCaMP8f']
+SENSORS = ['GCaMP8m', 'GCaMP8f']
 
 RASTER_WINDOW   = 30.0
 ROWS_PER_SENSOR = 3
@@ -351,7 +351,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR, out_dir=_DEFAULT_OUT_DIR):
     print(f'Loaded {sum(len(v) for v in all_records.values())} total records '
           f'across {len(all_records)} methods.\n')
 
-    fig = plt.figure(figsize=(6.5, 8), dpi=200)
+    fig = plt.figure(figsize=(6.5, 5), dpi=200)
 
     outer_gs = gridspec.GridSpec(
         N_SENSORS, 1,
@@ -427,4 +427,5 @@ def main():
 
 
 if __name__ == '__main__':
+    
     main()
