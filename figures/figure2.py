@@ -120,18 +120,31 @@ def _row(exp, model, tau_, fs_, time_, m, sweeps=0, n_cells=None, duration=None,
 
 def _save_records(records, path):
     if not records:
-        np.savez(path)
+        if not os.path.exists(path):
+            np.savez(path)
         return
-    keys = list(dict.fromkeys(k for r in records for k in r))
-    out = {}
-    for k in keys:
-        vals = [r.get(k, None) for r in records]
-        if any(isinstance(v, str) for v in vals if v is not None):
-            out[k] = np.array([str(v) if v is not None else '' for v in vals], dtype=object)
-        else:
-            out[k] = np.array([float(v) if v is not None else np.nan for v in vals],
-                               dtype=np.float64)
-    np.savez(path, **out)
+
+    new_tbl = _records_to_tbl(records)
+
+    if os.path.exists(path):
+        try:
+            existing = _load_records(path)
+            if existing and 'Model' in existing and 'Model' in new_tbl:
+                new_models = set(str(m) for m in new_tbl['Model'])
+                mask = np.array([str(m) not in new_models for m in existing['Model']], dtype=bool)
+                if mask.sum() > 0:
+                    existing_filtered = {k: v[mask] for k, v in existing.items()}
+                    combined = _tbl_concat([existing_filtered, new_tbl])
+                else:
+                    combined = new_tbl
+            else:
+                combined = new_tbl
+        except Exception:
+            combined = new_tbl
+    else:
+        combined = new_tbl
+
+    np.savez(path, **combined)
 
 
 def _load_records(path):
@@ -980,13 +993,19 @@ def _plot_cascade_comparison(ax, data_dir):
     fb_7     = data['fb_7'];     fb_30     = data['fb_30']
     cosmic_7 = data['cosmic_7']; cosmic_30 = data['cosmic_30']
 
-    pos      = [1, 2, 3.15, 4.15]
-    datasets = [
+    all_pos      = [1, 2, 3.15, 4.15]
+    all_datasets = [
         (fb_7[np.isfinite(fb_7)],          _CASCADE_CMP_COLOR_7P5),
         (fb_30[np.isfinite(fb_30)],         _CASCADE_CMP_COLOR_30),
         (cosmic_7[np.isfinite(cosmic_7)],   _CASCADE_CMP_COLOR_7P5),
         (cosmic_30[np.isfinite(cosmic_30)], _CASCADE_CMP_COLOR_30),
     ]
+    pos      = [p for p, (d, _) in zip(all_pos, all_datasets) if len(d) > 0]
+    datasets = [(d, c) for d, c in all_datasets if len(d) > 0]
+    if not datasets:
+        ax.text(0.5, 0.5, 'No finite data', transform=ax.transAxes,
+                ha='center', va='center', fontsize=7)
+        return
     parts = ax.violinplot([d for d, _ in datasets], positions=pos,
                           showmedians=True, widths=0.65)
     for pc, (_, col) in zip(parts['bodies'], datasets):
@@ -1063,7 +1082,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     mosaic = [
         ['sweeps',  'cells',    'duration',  'cascade_cmp'],
-        ['tau_p',   'tau_r',    'kurt_f',    'kurt_cosmic'],
+        ['tau_p',   'tau_r',    'kurt_p',    'kurt_r'     ],
         ['fs_p',    'fs_r',     'fs_fb',     'fs_cosmic'  ],
     ]
     fig, axes = plt.subplot_mosaic(mosaic, figsize=(7, 4.5), dpi=300)
@@ -1140,6 +1159,8 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
                 axes[ax_r].plot(subset[xcol], subset[rec_col],  '.-',
                                 color=COLORS.get(model, 'k'))
         subset_fs = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        subset_fs = {k: v[np.array(subset_fs['Fs'], dtype=float) != 100.0]
+                     for k, v in subset_fs.items()}
         if model.startswith('CASCADE'):
             subset_fs = _filter_cascade_shared_x(
                 subset_fs, _tbl_filter(combined, 'Experiment', 'Fs_Sensitivity'), 'Fs')
@@ -1176,15 +1197,14 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'), 'Mean_Kurtosis')
         if _tbl_len(subset) > 0:
-            fb = _fbeta(subset[prec_col], subset[rec_col])
-            axes['kurt_f'].plot(subset['Mean_Kurtosis'], fb, '.-',
+            axes['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
                                 color=COLORS.get(model, 'k'))
-            axes['kurt_cosmic'].plot(subset['Mean_Kurtosis'], subset['COSMIC'], '.-',
-                                     color=COLORS.get(model, 'k'))
+            axes['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col], '.-',
+                                color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
-        ('kurt_f',      'mean kurtosis', r'$F_\beta$'),
-        ('kurt_cosmic', 'mean kurtosis', 'CosMIC'),
+        ('kurt_p', 'mean kurtosis', 'Precision'),
+        ('kurt_r', 'mean kurtosis', 'Recall'),
     ]:
         axes[ax_key].set_xlabel(xlabel)
         axes[ax_key].set_ylabel(ylabel)

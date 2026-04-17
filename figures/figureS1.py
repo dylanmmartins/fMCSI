@@ -251,7 +251,10 @@ def plot_figure(data_dir='.'):
                             color=color, alpha=0.18, zorder=1)
             ax.plot(thresholds, mean, '.-',
                     color=color, lw=1.2, ms=4, zorder=3)
-            ax.axvline(0.2, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
+            if method == 'OASIS' and OASIS_SPIKE_DETECTION == 'peaks':
+                ax.axvline(1.0, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
+            else:
+                ax.axvline(0.5, color='k', lw=0.8, ls='--', alpha=0.55, zorder=2)
 
             ax.set_ylim([0, 1.08])
             ax.set_xlim([thresholds[0], thresholds[-1]])
