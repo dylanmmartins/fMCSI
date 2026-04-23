@@ -60,7 +60,7 @@ def _compute_otsu_threshold(data):
 
 
 @ray.remote(max_calls=1)
-def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_s=0.0):
+def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames):
 
     t0 = time.time()
     SAMPLES = cont_ca_sampler(Y_cell, params)
@@ -105,8 +105,7 @@ def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_
         prob_smooth, height=prob_thresh, distance=min_dist_frames
     )
 
-    lag_frames = lag_s * fs
-    spikes_sec = np.clip(spikes_frames - lag_frames, 0, n_frames - 1) / fs
+    spikes_sec = spikes_frames / fs
 
     prec = rec = f1 = 0.0
     if true_spikes_cell is not None:
@@ -131,7 +130,7 @@ def _process_cell(Y_cell, cell_idx, params, true_spikes_cell, fs, n_frames, lag_
     }
 
 
-def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
+def deconv(Y, params=None, true_spikes=None, benchmark=False):
 
     if ray.is_initialized():
         ray.shutdown()
@@ -142,6 +141,9 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
         prompt='Select a directory for Ray temporary files.\n'
                'A fast local drive (e.g. SSD scratch space) is recommended.',
     )
+
+    os.environ.setdefault("RAY_enable_metrics_collection", "0")
+    os.environ.setdefault("RAY_DISABLE_METRICS_REPORTING", "1")
 
     ray.init(
         _temp_dir=ray_dir,
@@ -154,6 +156,7 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
                 "OPENBLAS_NUM_THREADS": "1",
                 "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
                 "RAY_enable_metrics_collection": "0",
+                "RAY_DISABLE_METRICS_REPORTING": "1",
             }
         },
         _metrics_export_port=0,
@@ -163,14 +166,6 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
     n_cells, n_frames = Y.shape
 
     fs = params['f'] if params and 'f' in params else 1.0
-    
-    if lag_s is None:
-        defg = params.get('defg', []) if params else []
-        if len(defg) > 0 and 0.0 < defg[0] < 1.0:
-            import math
-            lag_s = -1.0 / (fs * math.log(defg[0]))
-        else:
-            lag_s = 0.045
 
     futures = []
     for i in range(n_cells):
@@ -181,7 +176,7 @@ def deconv(Y, params=None, true_spikes=None, benchmark=False, lag_s=None):
 
         ts_cell  = true_spikes[i] if true_spikes is not None else None
         futures.append(
-            _process_cell.remote(Y[i].copy(), i, p_copy, ts_cell, fs, n_frames, lag_s)
+            _process_cell.remote(Y[i].copy(), i, p_copy, ts_cell, fs, n_frames)
         )
 
     results_list = []

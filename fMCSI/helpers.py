@@ -31,12 +31,11 @@ def _otsu_threshold(values):
     return (x[best_i] + x[best_i + 1]) / 2.0
 
 
-def detect_spikes_from_probs(probs, fs, lag_s=0.0, sigma=1.5, min_thresh=0.001):
+def detect_spikes_from_probs(probs, fs, sigma=1.5, min_thresh=0.001):
 
     probs = np.atleast_2d(probs)
     n_cells, n_frames = probs.shape
     min_dist = max(1, int(0.1 * fs))
-    lag_frames = lag_s * fs
 
     sm = np.array([gaussian_filter1d(probs[i], sigma=sigma) if sigma > 0
                    else probs[i].copy()
@@ -63,7 +62,7 @@ def detect_spikes_from_probs(probs, fs, lag_s=0.0, sigma=1.5, min_thresh=0.001):
     spikes = []
     for i in range(n_cells):
         spf, _ = find_peaks(sm[i], height=thresh, distance=min_dist)
-        spikes.append(np.clip(spf - lag_frames, 0, n_frames - 1) / fs)
+        spikes.append(spf / fs)
 
     return spikes, thresh
 

@@ -96,7 +96,7 @@ def _block_nnls_deconv(y_corr, h, T, block_size=400):
     Divides the recording into non-overlapping blocks of `block_size` frames,
     solves a dense NNLS system on each block, and corrects for calcium that
     spills from earlier spikes into future blocks (overlap-add).  Memory cost
-    is O(block_size²) rather than O(T²).
+    is O(block_size^2) rather than O(T^2).
 
     Parameters
     ----------

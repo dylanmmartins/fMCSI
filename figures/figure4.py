@@ -15,7 +15,7 @@ from itertools import groupby
 
 import numpy as np
 import scipy.io
-from scipy.signal import correlate, find_peaks
+from scipy.signal import find_peaks
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -187,29 +187,6 @@ def _get_sensor(ds_folder):
         if keyword.lower() in s:
             return label
     return 'Other'
-
-
-def diagnose_time_shift(true_spikes, inferred_probs, fs, max_lag=10.0):
-
-    n_frames = inferred_probs.shape[1]
-    t_bins   = np.arange(n_frames + 1) / fs
-    lags     = []
-    for i in range(len(true_spikes)):
-        if len(true_spikes[i]) < 5:
-            continue
-        true_hist = np.histogram(true_spikes[i], bins=t_bins)[0].astype(float)
-        inf_trace = inferred_probs[i].astype(float)
-        inf_trace -= np.mean(inf_trace)
-        true_hist -= np.mean(true_hist)
-        if np.std(inf_trace) == 0 or np.std(true_hist) == 0:
-            continue
-        xcorr    = correlate(true_hist, inf_trace, mode='full')
-        lags_vec = np.arange(-(len(true_hist) - 1), len(inf_trace))
-        mask     = (lags_vec / fs >= -max_lag) & (lags_vec / fs <= max_lag)
-        if not np.any(mask):
-            continue
-        lags.append(lags_vec[mask][np.argmax(xcorr[mask])])
-    return float(np.median(lags) / fs) if lags else 0.0
 
 
 def compute_accuracy_window(true_spikes, predicted_spikes, tolerance=0.1):
@@ -407,7 +384,6 @@ def process_dataset(ds_folder, ground_truth_dir, model):
     for i, p in enumerate(probs_list):
         probs_2d[i, :len(p)] = p
 
-    lag         = diagnose_time_shift(true_spikes, probs_2d, fs)
     true_events = [_make_event_gt(sp, tau) for sp in true_spikes]
     prec_s, rec_s, f1_s = helpers.compute_accuracy_strict(
         true_spikes, spikes_list, tolerance=0.1)
@@ -433,7 +409,6 @@ def process_dataset(ds_folder, ground_truth_dir, model):
             'tau':              tau,
             'kurtosis':         cell['kurt'],
             'n_true_spikes':    int(len(cell['spk'])),
-            'lag_s':            float(lag),
             'f1':               float(f1_s[i]),
             'precision':        float(prec_s[i]),
             'recall':           float(rec_s[i]),
