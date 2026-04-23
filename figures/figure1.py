@@ -453,8 +453,11 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     labels    = [name for name, *_ in METHOD_INFO]
     positions = list(range(len(labels)))
     _display  = {
-        'fMCSI': 'fMCSI', 'MATLAB': 'MATLAB', 'OASIS': 'OASIS',
-        'CASCADE_GPU': 'CASCADE', 'CASCADE_CPU': 'CASCADE (CPU)',
+        'fMCSI': 'fMCSI',
+        'MATLAB': 'CaImAn',
+        'OASIS': 'OASIS',
+        'CASCADE_GPU': 'CASCADE',
+        'CASCADE_CPU': 'CASCADE (CPU)',
     }
     tick_labels = [_display.get(l, l) for l in labels]
 
@@ -572,16 +575,60 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     true_spikes_arr = list(MINE_RESULTS['true_spikes'])
     n_true_spikes   = np.array([len(np.atleast_1d(s)) for s in true_spikes_arr], dtype=float)
     my_tpc          = np.array(MINE_RESULTS['optim_times_per_cell'], dtype=float)
-    time_per_spike.scatter(n_true_spikes, my_tpc, s=2, c=COLORS['fMCSI'], alpha=0.6)
+    time_per_spike.scatter(n_true_spikes[my_tpc>0], my_tpc[my_tpc>0], s=2, c=COLORS['fMCSI'], alpha=0.6)
     time_per_spike.set_xlabel('# true spikes')
     time_per_spike.set_ylabel('time per cell (sec)')
-    time_per_spike.set_xlim([0, 2000])
+    time_per_spike.set_xlim([0, 1000])
+    time_per_spike.set_ylim([0,15])
+    plot_running_median(
+        time_per_spike,
+        n_true_spikes[(n_true_spikes<1000)*(my_tpc>0)],
+        my_tpc[(n_true_spikes<1000)*(my_tpc>0)],
+        n_bins=5,
+        vertical=False,
+        color='k',
+        fb=True
+    )
 
     for ext in ('png', 'svg'):
         out = os.path.join(data_dir, f'figure1.{ext}')
         fig.savefig(out, bbox_inches='tight')
         print(f'Saved -> {out}')
     plt.close(fig)
+
+
+def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
+
+    import scipy.stats
+    mask = ~np.isnan(x) & ~np.isnan(y)
+    if np.sum(mask) == 0:
+        return np.nan
+    x_use, y_use = x[mask], y[mask]
+    bins = np.linspace(np.min(x_use), np.max(x_use), n_bins)
+    bin_means, bin_edges, _ = scipy.stats.binned_statistic(x_use, y_use, np.nanmedian, bins=bins)
+    bin_std, _, _  = scipy.stats.binned_statistic(x_use, y_use, np.nanstd,    bins=bins)
+    hist, _, _     = scipy.stats.binned_statistic(x_use, y_use,
+                                                  lambda v: np.sum(~np.isnan(v)), bins=bins)
+    tuning_err = bin_std / np.sqrt(hist)
+    centers = bin_edges[:-1] + np.median(np.diff(bins)) / 2
+    if not vertical:
+        ax.plot(centers, bin_means, '-', color=color)
+        if fb:
+            ax.fill_between(centers, bin_means - tuning_err, bin_means + tuning_err,
+                            color=color, alpha=0.2)
+    else:
+        ax.plot(bin_means, centers, '-', color=color)
+        if fb:
+            ax.fill_betweenx(centers, bin_means - tuning_err, bin_means + tuning_err,
+                             color=color, alpha=0.2)
+            
+    # do a linear regressiona and print the slope
+    if len(x_use) > 1:
+        slope, intercept, r_value, p_value, std_err = scipy.stats.linregress(x_use, y_use)
+        print(f"Linear regression slope: {slope:.4f}, R-squared: {r_value**2:.4f}")
+
+    return np.nanmax(bin_means + tuning_err)
+
 
 
 def print_stats(data_dir=_DEFAULT_DATA_DIR):

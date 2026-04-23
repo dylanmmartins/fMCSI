@@ -28,7 +28,8 @@ import fMCSI.helpers as helpers
 from run_pnev_MCMC import run_matlab_pnevMCMC
 from simulation_helpers import generate_synthetic_data
 
-_MATLAB_PRECOMPUTED_DIR = '/home/dylan/Fast2/spike_deconv/sweeping_benchmarks/all_other_methods'
+_MATLAB_PRECOMPUTED_DIR    = '/home/dylan/Fast2/spike_deconv/sweeping_benchmarks/all_other_methods'
+_CASCADE_DURATION_ALT_DIR  = '/home/dylan/Fast2/spike_deconv/sweeping_benchmarks/cascade'
 
 _DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'fig2')
 
@@ -842,29 +843,49 @@ def benchmark_firing_rate_sensitivity(data_dir, run_oasis=True, run_matlab=True,
 
     return
 
+_CASCADE_SR_SEED     = 77
+_CASCADE_SR_N_CELLS  = 50
+_CASCADE_SR_DURATION = 300
+_CASCADE_SR_TAU      = 1.2
+
+
 def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
 
     from simulation_helpers import generate_synthetic_data
 
-    n_cells  = 50
-    duration = 300
-    tau      = 1.2
     out_path = os.path.join(data_dir, 'cascade_7p5_vs_30hz_data.npz')
+    rng = np.random.default_rng(_CASCADE_SR_SEED)
 
     results = {}
     for fs, suffix in [(7.5, '7'), (30.0, '30')]:
         print(f'  {fs} Hz...')
+        np.random.seed(int(rng.integers(0, 2**31)))
         dff, true_spikes, _, _, _, _ = generate_synthetic_data(
-            n_cells=n_cells, fs=fs, duration=duration, tau=tau)
-        true_events = [helpers.make_event_ground_truth(s, tau) for s in true_spikes]
+            n_cells=_CASCADE_SR_N_CELLS, fs=fs,
+            duration=_CASCADE_SR_DURATION, tau=_CASCADE_SR_TAU)
+        true_events = [helpers.make_event_ground_truth(s, _CASCADE_SR_TAU)
+                       for s in true_spikes]
+
+        ts_path = os.path.join(data_dir, f'cascade_samplerate_{fs}hz_true_spikes.npz')
+        np.savez(ts_path, true_spikes=np.array(true_spikes, dtype=object),
+                 tau=_CASCADE_SR_TAU)
 
         if not run_cascade:
-            results[f'fb_{suffix}']     = np.full(n_cells, np.nan)
-            results[f'cosmic_{suffix}'] = np.full(n_cells, np.nan)
+            results[f'fb_{suffix}']     = np.full(_CASCADE_SR_N_CELLS, np.nan)
+            results[f'cosmic_{suffix}'] = np.full(_CASCADE_SR_N_CELLS, np.nan)
             continue
 
         cascade_spikes = None
         for dev in ('gpu', 'cpu'):
+            out_file = os.path.join(data_dir, f'cascade_samplerate_{fs}hz_{dev}_output.npz')
+            if os.path.exists(out_file):
+                try:
+                    _d = np.load(out_file, allow_pickle=True)
+                    cascade_spikes = list(_d['cascade_spikes'])
+                    print(f'    Loaded existing CASCADE ({dev.upper()}) output')
+                    break
+                except Exception:
+                    pass
             try:
                 _, cascade_spikes, _ = _run_cascade_inference(
                     dff, fs, data_dir, f'cascade_samplerate_{fs}hz_{dev}', device=dev)
@@ -887,7 +908,7 @@ def benchmark_cascade_sample_rate(data_dir, run_cascade=True):
 
         results[f'fb_{suffix}']     = fb
         results[f'cosmic_{suffix}'] = cosmic
-        print(f'    mean Fβ={np.nanmean(fb):.3f}  CoSMIC={np.nanmean(cosmic):.3f}')
+        print(f'    mean Fβ={np.nanmean(fb):.3f}  CosMIC={np.nanmean(cosmic):.3f}')
 
     np.savez(out_path, **results)
     print(f'  Saved -> {out_path}')
@@ -980,10 +1001,65 @@ _CASCADE_CMP_COLOR_7P5 = 'tab:red'
 _CASCADE_CMP_COLOR_30  = 'tab:cyan'
 
 
+def _rebuild_cascade_sample_rate_data(data_dir):
+    out_path = os.path.join(data_dir, 'cascade_7p5_vs_30hz_data.npz')
+    results  = {}
+
+    for fs, suffix in [(7.5, '7'), (30.0, '30')]:
+        ts_path = os.path.join(data_dir, f'cascade_samplerate_{fs}hz_true_spikes.npz')
+        if not os.path.exists(ts_path):
+            print(f'  No saved true_spikes for {fs} Hz — re-run --mode test to regenerate.')
+            return
+
+        try:
+            td          = np.load(ts_path, allow_pickle=True)
+            true_spikes = list(td['true_spikes'])
+            tau         = float(td['tau']) if 'tau' in td else _CASCADE_SR_TAU
+        except Exception as exc:
+            print(f'  Could not load {ts_path}: {exc}')
+            return
+
+        cascade_spikes = None
+        for dev in ('gpu', 'cpu'):
+            out_file = os.path.join(data_dir, f'cascade_samplerate_{fs}hz_{dev}_output.npz')
+            if os.path.exists(out_file):
+                try:
+                    d = np.load(out_file, allow_pickle=True)
+                    cascade_spikes = list(d['cascade_spikes'])
+                    break
+                except Exception:
+                    pass
+        if cascade_spikes is None:
+            print(f'  No CASCADE output found for {fs} Hz — re-run --mode test.')
+            return
+
+        prec, rec, _ = fMCSI.compute_accuracy_strict(true_spikes, cascade_spikes,
+                                                      tolerance=0.1)
+        b2    = BETA ** 2
+        denom = b2 * prec + rec
+        fb    = np.where(denom > 0, (1 + b2) * prec * rec / denom, 0.0)
+        cosmic = helpers.compute_cosmic(true_spikes, cascade_spikes, fs)
+        results[f'fb_{suffix}']     = fb
+        results[f'cosmic_{suffix}'] = cosmic
+        print(f'  Rebuilt {fs} Hz: mean Fβ={np.nanmean(fb):.3f}  CosMIC={np.nanmean(cosmic):.3f}')
+
+    if len(results) == 4:
+        np.savez(out_path, **results)
+        print(f'  Saved rebuilt data -> {out_path}')
+
+
 def _plot_cascade_comparison(ax, data_dir):
     from matplotlib.patches import Patch
 
     npz_path = os.path.join(data_dir, 'cascade_7p5_vs_30hz_data.npz')
+    _needs_rebuild = not os.path.exists(npz_path)
+    if not _needs_rebuild:
+        _d = np.load(npz_path)
+        if all(not np.any(np.isfinite(_d[k])) for k in _d.files):
+            _needs_rebuild = True
+    if _needs_rebuild:
+        print('  Attempting to rebuild cascade sample-rate data from output files...')
+        _rebuild_cascade_sample_rate_data(data_dir)
     if not os.path.exists(npz_path):
         ax.text(0.5, 0.5, 'No data\n(run --mode test)',
                 transform=ax.transAxes, ha='center', va='center', fontsize=7)
@@ -1014,7 +1090,7 @@ def _plot_cascade_comparison(ax, data_dir):
         parts[partname].set_color('k'); parts[partname].set_linewidth(0.8)
 
     ax.set_xticks([(pos[0] + pos[1]) / 2, (pos[2] + pos[3]) / 2])
-    ax.set_xticklabels([r'$F_\beta$', 'CoSMIC'])
+    ax.set_xticklabels([r'$F_\beta$', 'CosMIC'])
     ax.legend(handles=[
         Patch(facecolor=_CASCADE_CMP_COLOR_7P5, alpha=0.75, label='7.5 Hz'),
         Patch(facecolor=_CASCADE_CMP_COLOR_30,  alpha=0.75, label='30 Hz'),
@@ -1060,6 +1136,40 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
         combined = _tbl_concat([combined, ext_tbl])
         print(f'Injected {len(ext_records)} CaImAn MCMC records from external files.')
 
+    dur_cascade_tbl = {}
+    for _ext in ('.npz', '.json'):
+        _alt_sc_path = os.path.join(_CASCADE_DURATION_ALT_DIR,
+                                    f'benchmark_scalability_partial{_ext}')
+        if not os.path.exists(_alt_sc_path):
+            continue
+        try:
+            if _ext == '.json':
+                import json as _json
+                with open(_alt_sc_path) as _f:
+                    _raw = _json.load(_f)
+                _rows = [r for r in _raw
+                         if str(r.get('Model', '')).startswith('CASCADE')
+                         and r.get('Experiment') == 'Duration_Scaling']
+                # remap bare 'CASCADE' → 'CASCADE_GPU'
+                for _r in _rows:
+                    if _r['Model'] == 'CASCADE':
+                        _r['Model'] = 'CASCADE_GPU'
+                if _rows:
+                    dur_cascade_tbl = _records_to_tbl(_rows)
+            else:
+                _alt = _load_records(_alt_sc_path)
+                _mask = np.array([
+                    str(m).startswith('CASCADE') and str(e) == 'Duration_Scaling'
+                    for m, e in zip(_alt.get('Model', []), _alt.get('Experiment', []))
+                ], dtype=bool)
+                if _mask.sum() > 0:
+                    dur_cascade_tbl = {k: v[_mask] for k, v in _alt.items()}
+            if dur_cascade_tbl:
+                print(f'Loaded {_tbl_len(dur_cascade_tbl)} CASCADE duration rows from alt dir.')
+                break
+        except Exception as _exc:
+            print(f'Warning: could not load alt CASCADE duration data: {_exc}')
+
     fr_tbl = {}
     fr_path = os.path.join(data_dir, 'firing_rate_sensitivity_partial.npz')
     if os.path.exists(fr_path):
@@ -1080,12 +1190,38 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     scaling_stats = []
 
-    mosaic = [
-        ['sweeps',  'cells',    'duration',  'cascade_cmp'],
-        ['tau_p',   'tau_r',    'kurt_p',    'kurt_r'     ],
-        ['fs_p',    'fs_r',     'fs_fb',     'fs_cosmic'  ],
+    _legend_labels = {
+        'fMCSI': 'fMCSI', 'CaImAn MCMC': 'CaImAn MCMC', 'OASIS': 'OASIS',
+        'CASCADE_GPU': 'CASCADE (GPU)', 'CASCADE_CPU': 'CASCADE (CPU)',
+    }
+    legend_handles = [
+        plt.Line2D([0], [0], color=COLORS[m], marker='.', linestyle='-',
+                   label=_legend_labels[m])
+        for m in ['fMCSI', 'CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU']
     ]
-    fig, axes = plt.subplot_mosaic(mosaic, figsize=(7, 4.5), dpi=300)
+
+    _legend_labels1 = {
+        'fMCSI': 'fMCSI', 'CaImAn MCMC': 'CaImAn MCMC', 'OASIS': 'OASIS',
+        'CASCADE_CPU': 'CASCADE',
+    }
+    legend_handles1 = [
+        plt.Line2D([0], [0], color=COLORS[m], marker='.', linestyle='-',
+                   label=_legend_labels1[m])
+        for m in ['fMCSI', 'CaImAn MCMC', 'OASIS', 'CASCADE_CPU']
+    ]
+
+
+    mosaic_A = [
+        ['sweeps',   'sweeps',   'sweeps',   'sweeps',
+         'cells',    'cells',    'cells',    'cells',
+         'duration', 'duration', 'duration', 'duration'],
+        ['tau_p',    'tau_p',    'tau_p',    'tau_r',
+         'tau_r',    'tau_r',    'kurt_p',   'kurt_p',
+         'kurt_p',   'kurt_r',   'kurt_r',   'kurt_r'],
+    ]
+
+    figA, axA = plt.subplot_mosaic(mosaic_A, figsize=(7, 3.5), dpi=300,
+                                    gridspec_kw={'height_ratios': [3, 2]})
 
     for model in ['fMCSI', 'CaImAn MCMC']:
         m_rows = _tbl_filter(combined, 'Model', model)
@@ -1093,15 +1229,15 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             continue
         subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Sweeps'), 'Sweeps')
         if _tbl_len(subset) > 0:
-            axes['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
-                                '.-', label=model, color=COLORS.get(model, 'k'))
+            axA['sweeps'].plot(subset['Sweeps'], subset['Time'] / 60.0,
+                               '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Sweeps'], subset['Time'])
             scaling_stats.append({'Experiment': 'Sweeps', 'Model': model,
                                    'Variable': 'Sweeps', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
-    axes['sweeps'].set_xlabel('# sweeps')
-    axes['sweeps'].set_ylabel('compute time (min)')
-    axes['sweeps'].set_yscale('log')
+    axA['sweeps'].set_xlabel('# sweeps')
+    axA['sweeps'].set_ylabel('compute time (min)')
+    axA['sweeps'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
         m_rows = _tbl_filter(combined, 'Model', model)
@@ -1112,78 +1248,75 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
             subset = _filter_cascade_shared_x(
                 subset, _tbl_filter(combined, 'Experiment', 'Cell_Scaling'), 'N_Cells')
         if _tbl_len(subset) > 0:
-            axes['cells'].plot(subset['N_Cells'], subset['Time'] / 60.,
-                               '.-', label=model, color=COLORS.get(model, 'k'))
+            axA['cells'].plot(subset['N_Cells'], subset['Time'] / 60.,
+                              '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['N_Cells'], subset['Time'])
             scaling_stats.append({'Experiment': 'Cell_Scaling', 'Model': model,
                                    'Variable': 'N_Cells', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
-    axes['cells'].set_xlabel('# cells')
-    axes['cells'].set_ylabel('compute time (min)')
-    axes['cells'].set_yscale('log')
+    axA['cells'].set_xlabel('# cells')
+    axA['cells'].set_ylabel('compute time (min)')
+    axA['cells'].set_yscale('log')
 
     for model in ['CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU', 'fMCSI']:
-        m_rows = _tbl_filter(combined, 'Model', model)
+        if model.startswith('CASCADE') and dur_cascade_tbl:
+            src = dur_cascade_tbl
+        else:
+            src = combined
+        m_rows = _tbl_filter(src, 'Model', model)
         if _tbl_len(m_rows) == 0:
             continue
         subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Duration_Scaling'), 'Duration')
-        if model.startswith('CASCADE'):
-            subset = _filter_cascade_shared_x(
-                subset, _tbl_filter(combined, 'Experiment', 'Duration_Scaling'), 'Duration')
         if _tbl_len(subset) > 0:
-            axes['duration'].plot(subset['Duration'] / 3600., subset['Time'] / 60.,
-                                  '.-', label=model, color=COLORS.get(model, 'k'))
+            axA['duration'].plot(subset['Duration'] / 60., subset['Time'] / 60.,
+                                 '.-', label=model, color=COLORS.get(model, 'k'))
             r2l, r2p, c = _fit_scaling(subset['Duration'], subset['Time'])
             scaling_stats.append({'Experiment': 'Duration_Scaling', 'Model': model,
                                    'Variable': 'Duration', 'Lin_R2': r2l,
                                    'Poly_R2': r2p, 'Conclusion': c})
-    axes['duration'].set_xlabel('recording duration (hr)')
-    axes['duration'].set_ylabel('compute time (min)')
-    axes['duration'].set_yscale('log')
-    _set_three_ticks_x(axes['duration'])
+
+    _extrap = {'CaImAn MCMC': 496.0, 'CASCADE_CPU': 5.0}
+    for model, t_extrap in _extrap.items():
+        color = COLORS.get(model, 'k')
+
+        src = dur_cascade_tbl if model.startswith('CASCADE') and dur_cascade_tbl else combined
+        m_rows = _tbl_filter(src, 'Model', model)
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Duration_Scaling'), 'Duration')
+        if _tbl_len(subset) > 0:
+            last_dur  = float(subset['Duration'][-1]) / 60.
+            last_time = float(subset['Time'][-1])    / 60.
+            axA['duration'].plot([last_dur, 120.], [last_time, t_extrap],
+                                 '-', color=color)
+        axA['duration'].plot(120., t_extrap, '.', color=color)
+
+    axA['duration'].set_xlabel('recording duration (min)')
+    axA['duration'].set_ylabel('compute time (min)')
+    axA['duration'].set_yscale('log')
+    axA['duration'].set_xticks([0, 60, 120])
+    axA['duration'].set_xticklabels(['0', '60', '120'])
 
     for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
         m_rows = _tbl_filter(combined, 'Model', model)
         if _tbl_len(m_rows) == 0:
             continue
-        for exp, xcol, ax_p, ax_r in [
-            ('Tau_Sensitivity', 'Tau', 'tau_p', 'tau_r'),
-        ]:
-            subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', exp), xcol)
-            if model.startswith('CASCADE'):
-                subset = _filter_cascade_shared_x(
-                    subset, _tbl_filter(combined, 'Experiment', exp), xcol)
-            if _tbl_len(subset) > 0:
-                axes[ax_p].plot(subset[xcol], subset[prec_col], '.-',
-                                color=COLORS.get(model, 'k'))
-                axes[ax_r].plot(subset[xcol], subset[rec_col],  '.-',
-                                color=COLORS.get(model, 'k'))
-        subset_fs = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Fs_Sensitivity'), 'Fs')
-        subset_fs = {k: v[np.array(subset_fs['Fs'], dtype=float) != 100.0]
-                     for k, v in subset_fs.items()}
+        subset = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Tau_Sensitivity'), 'Tau')
         if model.startswith('CASCADE'):
-            subset_fs = _filter_cascade_shared_x(
-                subset_fs, _tbl_filter(combined, 'Experiment', 'Fs_Sensitivity'), 'Fs')
-        if _tbl_len(subset_fs) > 0:
-            fb_fs = _fbeta(subset_fs[prec_col], subset_fs[rec_col])
-            axes['fs_p'].plot(subset_fs['Fs'], subset_fs[prec_col], '.-',
+            subset = _filter_cascade_shared_x(
+                subset, _tbl_filter(combined, 'Experiment', 'Tau_Sensitivity'), 'Tau')
+        if _tbl_len(subset) > 0:
+            axA['tau_p'].plot(subset['Tau'], subset[prec_col], '.-',
                               color=COLORS.get(model, 'k'))
-            axes['fs_r'].plot(subset_fs['Fs'], subset_fs[rec_col],  '.-',
+            axA['tau_r'].plot(subset['Tau'], subset[rec_col],  '.-',
                               color=COLORS.get(model, 'k'))
-            axes['fs_fb'].plot(subset_fs['Fs'], fb_fs, '.-',
-                               color=COLORS.get(model, 'k'))
-            axes['fs_cosmic'].plot(subset_fs['Fs'], subset_fs['COSMIC'], '.-',
-                                   color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
-        ('tau_p',     'tau (s)', 'Precision'),   ('tau_r',     'tau (s)', 'Recall'),
-        ('fs_p',      'Hz',      'Precision'),   ('fs_r',      'Hz',      'Recall'),
-        ('fs_fb',     'Hz',      r'$F_\beta$'),  ('fs_cosmic', 'Hz',      'CosMIC'),
+        ('tau_p', 'tau (s)', 'Precision'),
+        ('tau_r', 'tau (s)', 'Recall'),
     ]:
-        axes[ax_key].set_xlabel(xlabel)
-        axes[ax_key].set_ylabel(ylabel)
-        axes[ax_key].set_ylim(-0.05, 1.05)
-        _set_three_ticks_x(axes[ax_key])
+        axA[ax_key].set_xlabel(xlabel)
+        axA[ax_key].set_ylabel(ylabel)
+        axA[ax_key].set_ylim(0.45, 1.05)
+        _set_three_ticks_x(axA[ax_key])
 
     for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
         m_rows = _tbl_filter(combined, 'Model', model)
@@ -1195,49 +1328,103 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
         subset = _tbl_sort(subset, 'Mean_Kurtosis')
         if model.startswith('CASCADE'):
             subset = _filter_cascade_shared_x(
-                subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'), 'Mean_Kurtosis')
+                subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'),
+                'Mean_Kurtosis')
         if _tbl_len(subset) > 0:
-            axes['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
-                                color=COLORS.get(model, 'k'))
-            axes['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col], '.-',
-                                color=COLORS.get(model, 'k'))
+            axA['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
+                               color=COLORS.get(model, 'k'))
+            axA['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col], '.-',
+                               color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
         ('kurt_p', 'mean kurtosis', 'Precision'),
         ('kurt_r', 'mean kurtosis', 'Recall'),
     ]:
-        axes[ax_key].set_xlabel(xlabel)
-        axes[ax_key].set_ylabel(ylabel)
-        axes[ax_key].set_ylim(-0.05, 1.05)
-        _set_three_ticks_x(axes[ax_key])
+        axA[ax_key].set_xlabel(xlabel)
+        axA[ax_key].set_ylabel(ylabel)
+        axA[ax_key].set_ylim(0.45, 1.05)
+        axA[ax_key].set_xticks([2, 5, 8])
+        axA[ax_key].set_xlim(1.5, 9.5)
 
-    _plot_cascade_comparison(axes['cascade_cmp'], data_dir)
-
-    _legend_labels = {
-        'fMCSI': 'fMCSI', 'CaImAn MCMC': 'CaImAn MCMC', 'OASIS': 'OASIS',
-        'CASCADE_GPU': 'CASCADE (GPU)', 'CASCADE_CPU': 'CASCADE (CPU)',
-    }
-    handles = [plt.Line2D([0], [0], color=COLORS[m], marker='.', linestyle='-',
-                          label=_legend_labels[m])
-               for m in ['fMCSI', 'CaImAn MCMC', 'OASIS', 'CASCADE_GPU', 'CASCADE_CPU']]
-    fig.legend(handles=handles, loc='upper center', ncol=5,
-               bbox_to_anchor=(0.5, 1.02), frameon=False, fontsize=7)
-
-    plt.tight_layout()
+    figA.legend(handles=legend_handles, loc='upper center', ncol=5,
+                bbox_to_anchor=(0.5, 1.02), frameon=False, fontsize=7)
 
     print('\nScaling statistics:')
     print(f'{"Experiment":<22} {"Model":<12} {"Variable":<10} '
-          f'{"Lin R²":<8} {"Poly R²":<8} {"Fit":<12}')
+          f'{"Lin R^2":<8} {"Poly R^2":<8} {"Fit":<12}')
     print('-' * 80)
     for s in scaling_stats:
         print(f'{s["Experiment"]:<22} {s["Model"]:<12} {s["Variable"]:<10} '
               f'{s["Lin_R2"]:<8.4f} {s["Poly_R2"]:<8.4f} {s["Conclusion"]:<12}')
+        
+    figA.subplots_adjust(wspace=20., hspace=0.55, top=0.88)
 
-    for ext in ('png', 'svg'):
-        out = os.path.join(data_dir, f'figure2.{ext}')
-        fig.savefig(out, dpi=300, bbox_inches='tight')
+    for sfx in ('png', 'svg'):
+        out = os.path.join(data_dir, f'figure2A.{sfx}')
+        figA.savefig(out, dpi=300, bbox_inches='tight')
         print(f'Saved -> {out}')
-    plt.close(fig)
+    plt.close(figA)
+
+
+    mosaic_B = [
+        ['fs_p',  'fs_r'     ],
+        ['fs_fb', 'fs_cosmic'],
+        ['casc',  'casc'     ],
+    ]
+    figB, axB = plt.subplot_mosaic(
+        mosaic_B, figsize=(3.25, 4.5), dpi=300,
+        gridspec_kw={'height_ratios': [2, 2, 3]},
+    )
+
+    for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
+        m_rows = _tbl_filter(combined, 'Model', model)
+        if _tbl_len(m_rows) == 0:
+            continue
+        subset_fs = _tbl_sort(_tbl_filter(m_rows, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        subset_fs = {k: v[np.array(subset_fs['Fs'], dtype=float) != 100.0]
+                     for k, v in subset_fs.items()}
+        if model.startswith('CASCADE'):
+            subset_fs = _filter_cascade_shared_x(
+                subset_fs, _tbl_filter(combined, 'Experiment', 'Fs_Sensitivity'), 'Fs')
+        if _tbl_len(subset_fs) > 0:
+            fb_fs = _fbeta(subset_fs[prec_col], subset_fs[rec_col])
+            axB['fs_p'].plot(subset_fs['Fs'], subset_fs[prec_col], '.-',
+                             color=COLORS.get(model, 'k'))
+            axB['fs_r'].plot(subset_fs['Fs'], subset_fs[rec_col],  '.-',
+                             color=COLORS.get(model, 'k'))
+            axB['fs_fb'].plot(subset_fs['Fs'], fb_fs, '.-',
+                              color=COLORS.get(model, 'k'))
+            axB['fs_cosmic'].plot(subset_fs['Fs'], subset_fs['COSMIC'], '.-',
+                                  color=COLORS.get(model, 'k'))
+            
+    axB['fs_p'].set_ylim([0.45, 1.05])
+    axB['fs_r'].set_ylim([0.45, 1.05])
+    axB['fs_fb'].set_ylim([0.45, 1.05])
+    axB['fs_cosmic'].set_ylim(-0.05, 1.05)
+
+    for ax_key, xlabel, ylabel in [
+        ('fs_p',      'sample rate (Hz)', 'Precision'),
+        ('fs_r',      'sample rate (Hz)', 'Recall'),
+        ('fs_fb',     'sample rate (Hz)', r'$F_\beta$'),
+        ('fs_cosmic', 'sample rate (Hz)', 'CosMIC'),
+    ]:
+        axB[ax_key].set_xlabel(xlabel)
+        axB[ax_key].set_ylabel(ylabel)
+        _set_three_ticks_x(axB[ax_key])
+
+    _plot_cascade_comparison(axB['casc'], data_dir)
+
+    figB.legend(handles=legend_handles1, loc='upper center', ncol=5,
+                bbox_to_anchor=(0.5, 1.02), frameon=False, fontsize=7)
+    figB.tight_layout()
+
+    figA.subplots_adjust(top=0.88)
+
+    for sfx in ('png', 'svg'):
+        out = os.path.join(data_dir, f'figure2B.{sfx}')
+        figB.savefig(out, dpi=300, bbox_inches='tight')
+        print(f'Saved -> {out}')
+    plt.close(figB)
 
 
 if __name__ == '__main__':
