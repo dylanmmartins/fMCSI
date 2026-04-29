@@ -52,9 +52,6 @@ COLORS = {
     'CASCADE_CPU':  '#B39DDB',
 }
 
-
-#   'threshold' : return every frame where s > height * sigma (default)
-#   'peaks'     : find local maxima above height * sigma with minimum inter-peak distance
 OASIS_SPIKE_DETECTION = 'peaks'
 
 
@@ -242,11 +239,11 @@ def _load_external_matlab_data():
 
     d = _MATLAB_PRECOMPUTED_DIR
     return {
-        'sweeps':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_sweeps_partial.json')),
-        'scalability':  _trad_mcmc_from_json(os.path.join(d, 'benchmark_scalability_partial.json')),
-        'params':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_params_partial.json')),
-        'kurtosis':     _trad_mcmc_from_json(os.path.join(d, 'benchmark_kurtosis_partial.json')),
-        'firing_rate':  _trad_mcmc_from_json(os.path.join(d, 'firing_rate_sensitivity_partial.json')),
+        'sweeps':            _trad_mcmc_from_json(os.path.join(d, 'benchmark_sweeps_partial.json')),
+        'scalability':       _trad_mcmc_from_json(os.path.join(d, 'benchmark_scalability_partial.json')),
+        'params':            _trad_mcmc_from_json(os.path.join(d, 'benchmark_params_partial.json')),
+        'noise_sensitivity': [],
+        'firing_rate':       _trad_mcmc_from_json(os.path.join(d, 'firing_rate_sensitivity_partial.json')),
         'sweeps_traces_npz':      os.path.join(d, 'benchmark_sweeps_traces.npz'),
         'firing_rate_traces_npz': os.path.join(d, 'firing_rate_sensitivity_traces.npz'),
     }
@@ -635,36 +632,57 @@ def benchmark_params(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
     return
 
 
-def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
-                       run_cascade=True, matlab_records=None):
+def benchmark_noise_sensitivity(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
+                                  run_cascade=True, matlab_records=None, cells_only=False):
 
-    n_cells  = 50
-    duration = 300
-    fs       = 30.0
-    tau      = 1.2
-    kurtosis_ranges = [
-        (1.0,  10.0),
-        (3.0,  20.0),
-        (6.0,  30.0),
-        (10.0, 50.0),
-        (20.0, 100.0),
-    ]
+    n_cells    = 50
+    duration   = 300
+    fs         = 30.0
+    tau        = 1.2
+    snr_levels = [100.0, 50.0, 20.0, 10.0, 5.0, 2.0, 1.0]
 
-    results = []
-    partial_path = os.path.join(data_dir, 'benchmark_kurtosis_partial.npz')
+    results      = []
+    cell_records = []
+    partial_path = os.path.join(data_dir, 'benchmark_noise_sensitivity_partial.npz')
+    cells_path   = os.path.join(data_dir, 'benchmark_noise_sensitivity_cells.npz')
 
-    for min_k, max_k in kurtosis_ranges:
-        label = f'{min_k}-{max_k}'
-        print(f'  Kurtosis range {label}...')
+    _metric_keys = ['F1','Precision','Recall',
+                    'F1_window','Precision_window','Recall_window',
+                    'F1_event','Precision_event','Recall_event','COSMIC']
+
+    print(f'Generating fixed cell population (n_cells={n_cells}, duration={duration}s)...')
+    _, true_spikes, clean_traces, _, _, _ = generate_synthetic_data(
+        n_cells=n_cells, fs=fs, duration=duration, tau=tau, snr=1e6
+    )
+    true_events = [helpers.make_event_ground_truth(s, tau) for s in true_spikes]
+
+    peak_signals = np.array([
+        np.percentile(clean_traces[i], 99) - np.percentile(clean_traces[i], 1)
+        for i in range(n_cells)
+    ])
+    peak_signals = np.maximum(peak_signals, 1e-9)
+
+    def _append_cell_rows(model_name, snr_val, pred_spk):
+        p, r, _   = fMCSI.compute_accuracy_strict(true_spikes, pred_spk, tolerance=0.1)
+        pw, rw, _ = helpers.compute_accuracy_window(true_spikes, pred_spk)
+        for i in range(n_cells):
+            cell_records.append({
+                'Model':            model_name,
+                'SNR':              float(snr_val),
+                'Precision':        float(p[i]),
+                'Recall':           float(r[i]),
+                'Precision_window': float(pw[i]),
+                'Recall_window':    float(rw[i]),
+            })
+
+    for snr_val in snr_levels:
+        print(f'  SNR={snr_val}...')
         try:
-            dff, true_spikes, _, _, _, actual_kurt = generate_synthetic_data(
-                n_cells=n_cells, fs=fs, duration=duration, tau=tau,
-                target_kurtosis_range=(min_k, max_k)
-            )
-            mean_kurt   = float(np.mean(actual_kurt))
-            true_events = [helpers.make_event_ground_truth(s, tau) for s in true_spikes]
+            sigmas = peak_signals / snr_val
+            dff = clean_traces + np.random.normal(0, sigmas[:, None],
+                                                   size=clean_traces.shape)
 
-            base = {'Experiment': 'Kurtosis_Sensitivity', 'Kurtosis_Range': label,
+            base = {'Experiment': 'Noise_Sensitivity', 'SNR': snr_val,
                     'N_Cells': n_cells, 'Duration': duration}
 
             def km(pred_spk):
@@ -676,11 +694,8 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                                        benchmark=True)
                 t_my = time.time() - t0
                 results.append({**base, 'Model': 'fMCSI', 'Time': t_my,
-                                 'Mean_Kurtosis': mean_kurt, **dict(zip(
-                                     ['F1','Precision','Recall',
-                                      'F1_window','Precision_window','Recall_window',
-                                      'F1_event','Precision_event','Recall_event','COSMIC'],
-                                     km(res['optim_spikes'])))})
+                                 **dict(zip(_metric_keys, km(res['optim_spikes'])))})
+                _append_cell_rows('fMCSI', snr_val, res['optim_spikes'])
                 print(f'    fMCSI: F1={results[-1]["F1"]:.3f}')
 
             if run_matlab and matlab_records is None:
@@ -688,11 +703,8 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                 trad_spikes, _, _, _ = run_matlab_pnevMCMC(dff, fs=fs, tau=tau, n_sweeps='auto')
                 t_trad = time.time() - t0
                 results.append({**base, 'Model': 'CaImAn MCMC', 'Time': t_trad,
-                                 'Mean_Kurtosis': mean_kurt, **dict(zip(
-                                     ['F1','Precision','Recall',
-                                      'F1_window','Precision_window','Recall_window',
-                                      'F1_event','Precision_event','Recall_event','COSMIC'],
-                                     km(trad_spikes)))})
+                                 **dict(zip(_metric_keys, km(trad_spikes)))})
+                _append_cell_rows('CaImAn MCMC', snr_val, trad_spikes)
                 print(f'    CaImAn MCMC: F1={results[-1]["F1"]:.3f}')
 
             if run_oasis:
@@ -700,33 +712,32 @@ def benchmark_kurtosis(data_dir, run_oasis=True, run_matlab=True, run_mine=True,
                 oas_spk, _ = _oasis_spikes(dff, fs, tau, n_cells)
                 t_oasis = time.time() - t0
                 results.append({**base, 'Model': 'OASIS', 'Time': t_oasis,
-                                 'Mean_Kurtosis': mean_kurt, **dict(zip(
-                                     ['F1','Precision','Recall',
-                                      'F1_window','Precision_window','Recall_window',
-                                      'F1_event','Precision_event','Recall_event','COSMIC'],
-                                     km(oas_spk)))})
+                                 **dict(zip(_metric_keys, km(oas_spk)))})
+                _append_cell_rows('OASIS', snr_val, oas_spk)
                 print(f'    OASIS: F1={results[-1]["F1"]:.3f}')
 
             if run_cascade:
                 for _dev, _model in [('gpu', 'CASCADE_GPU'), ('cpu', 'CASCADE_CPU')]:
                     _, cascade_spikes, t_cascade = _run_cascade_inference(
-                        dff, fs, data_dir, f'bench_kurt_{label}_{_dev}', device=_dev)
+                        dff, fs, data_dir, f'bench_noise_snr{snr_val}_{_dev}', device=_dev)
                     results.append({**base, 'Model': _model, 'Time': t_cascade,
-                                     'Mean_Kurtosis': mean_kurt, **dict(zip(
-                                         ['F1','Precision','Recall',
-                                          'F1_window','Precision_window','Recall_window',
-                                          'F1_event','Precision_event','Recall_event','COSMIC'],
-                                         km(cascade_spikes)))})
+                                     **dict(zip(_metric_keys, km(cascade_spikes)))})
+                    _append_cell_rows(_model, snr_val, cascade_spikes)
                     print(f'    CASCADE ({_dev.upper()}): F1={results[-1]["F1"]:.3f}')
 
         except Exception as exc:
-            print(f'  Failed for kurtosis {label}: {exc}')
-        _save_records(results, partial_path)
+            print(f'  Failed for SNR={snr_val}: {exc}')
+        if not cells_only:
+            _save_records(results, partial_path)
 
-    if run_matlab and matlab_records is not None:
-        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (kurtosis) records...')
+    if not cells_only and run_matlab and matlab_records is not None:
+        print(f'\nInjecting {len(matlab_records)} precomputed CaImAn MCMC (noise) records...')
         results.extend(matlab_records)
         _save_records(results, partial_path)
+
+    if cell_records:
+        _save_records(cell_records, cells_path)
+        print(f'  Saved {len(cell_records)} cell-level rows -> {cells_path}')
 
     return
 
@@ -923,7 +934,7 @@ def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
     if run_matlab:
         print(f'loading pre-computed caiman MCMC data from:\n  {_MATLAB_PRECOMPUTED_DIR}')
         ext = _load_external_matlab_data()
-        total = sum(len(ext[k]) for k in ('sweeps', 'scalability', 'params', 'kurtosis', 'firing_rate'))
+        total = sum(len(ext[k]) for k in ('sweeps', 'scalability', 'params', 'noise_sensitivity', 'firing_rate'))
         print(f'  Loaded {total} CaImAn MCMC records across all benchmarks.')
 
     kw_shared = dict(run_oasis=run_oasis, run_mine=run_fmcsi, run_cascade=run_cascade,
@@ -938,9 +949,9 @@ def run_test(data_dir=_DEFAULT_DATA_DIR, run_fmcsi=True, run_matlab=True,
     print('\n=== Parameter sensitivity benchmark ===')
     benchmark_params(data_dir, **kw_shared,
                      matlab_records=ext['params'] if ext else None)
-    print('\n=== Kurtosis sensitivity benchmark ===')
-    benchmark_kurtosis(data_dir, **kw_shared,
-                       matlab_records=ext['kurtosis'] if ext else None)
+    print('\n=== Noise sensitivity benchmark ===')
+    benchmark_noise_sensitivity(data_dir, **kw_shared,
+                                matlab_records=ext['noise_sensitivity'] if ext else None)
     print('\n=== Firing-rate sensitivity benchmark ===')
     benchmark_firing_rate_sensitivity(data_dir, **kw_shared,
                                       matlab_records=ext['firing_rate'] if ext else None)
@@ -1100,13 +1111,25 @@ def _plot_cascade_comparison(ax, data_dir):
     ax.set_ylim(0, 1.1)
 
 
+def _running_median_se(x, y, x_out, bandwidth):
+    medians = np.full(len(x_out), np.nan)
+    ses     = np.full(len(x_out), np.nan)
+    for i, xc in enumerate(x_out):
+        mask = (x >= xc - bandwidth) & (x <= xc + bandwidth)
+        if mask.sum() >= 5:
+            vals        = y[mask]
+            medians[i]  = np.median(vals)
+            ses[i]      = vals.std(ddof=1) / np.sqrt(len(vals))
+    return medians, ses
+
+
 def plot_figure(data_dir=_DEFAULT_DATA_DIR):
 
     partial_files = [
         'benchmark_sweeps_partial.npz',
         'benchmark_scalability_partial.npz',
         'benchmark_params_partial.npz',
-        'benchmark_kurtosis_partial.npz',
+        'benchmark_noise_sensitivity_partial.npz',
     ]
 
     all_records = []
@@ -1127,7 +1150,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
     combined = _tbl_concat(all_records)
 
     ext = _load_external_matlab_data()
-    ext_benchmark_keys = ['sweeps', 'scalability', 'params', 'kurtosis']
+    ext_benchmark_keys = ['sweeps', 'scalability', 'params', 'noise_sensitivity']
     ext_records = []
     for key in ext_benchmark_keys:
         ext_records.extend(ext[key])
@@ -1150,7 +1173,7 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
                 _rows = [r for r in _raw
                          if str(r.get('Model', '')).startswith('CASCADE')
                          and r.get('Experiment') == 'Duration_Scaling']
-                # remap bare 'CASCADE' → 'CASCADE_GPU'
+
                 for _r in _rows:
                     if _r['Model'] == 'CASCADE':
                         _r['Model'] = 'CASCADE_GPU'
@@ -1216,8 +1239,8 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
          'cells',    'cells',    'cells',    'cells',
          'duration', 'duration', 'duration', 'duration'],
         ['tau_p',    'tau_p',    'tau_p',    'tau_r',
-         'tau_r',    'tau_r',    'kurt_p',   'kurt_p',
-         'kurt_p',   'kurt_r',   'kurt_r',   'kurt_r'],
+         'tau_r',    'tau_r',    'noise_p',  'noise_p',
+         'noise_p',  'noise_r',  'noise_r',  'noise_r'],
     ]
 
     figA, axA = plt.subplot_mosaic(mosaic_A, figsize=(7, 3.5), dpi=300,
@@ -1318,33 +1341,72 @@ def plot_figure(data_dir=_DEFAULT_DATA_DIR):
         axA[ax_key].set_ylim(0.45, 1.05)
         _set_three_ticks_x(axA[ax_key])
 
-    for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
-        m_rows = _tbl_filter(combined, 'Model', model)
-        if _tbl_len(m_rows) == 0:
-            continue
-        subset = _tbl_filter(m_rows, 'Experiment', 'Kurtosis_Sensitivity')
-        if _tbl_len(subset) == 0 or 'Mean_Kurtosis' not in subset:
-            continue
-        subset = _tbl_sort(subset, 'Mean_Kurtosis')
-        if model.startswith('CASCADE'):
-            subset = _filter_cascade_shared_x(
-                subset, _tbl_filter(combined, 'Experiment', 'Kurtosis_Sensitivity'),
-                'Mean_Kurtosis')
-        if _tbl_len(subset) > 0:
-            axA['kurt_p'].plot(subset['Mean_Kurtosis'], subset[prec_col], '.-',
-                               color=COLORS.get(model, 'k'))
-            axA['kurt_r'].plot(subset['Mean_Kurtosis'], subset[rec_col], '.-',
-                               color=COLORS.get(model, 'k'))
+    _cells_path = os.path.join(data_dir, 'benchmark_noise_sensitivity_cells.npz')
+    _noise_cells = None
+    if os.path.exists(_cells_path):
+        try:
+            _noise_cells = _load_records(_cells_path)
+            print(f'Loaded {_tbl_len(_noise_cells)} cell-level noise rows.')
+        except Exception as _exc:
+            print(f'Warning: could not load noise cells file: {_exc}')
+
+    _prec_col_cell = 'Precision_window' if not USE_STRICT_ACCURACY else 'Precision'
+    _rec_col_cell  = 'Recall_window'    if not USE_STRICT_ACCURACY else 'Recall'
+
+    if _noise_cells is not None and _tbl_len(_noise_cells) > 0:
+        _all_snr = _noise_cells['SNR'].astype(float)
+        _snr_levels_sorted = np.sort(np.unique(_all_snr))[::-1]
+
+        for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
+            _mask_m = _noise_cells['Model'] == model
+            if _mask_m.sum() == 0:
+                continue
+            color = COLORS.get(model, 'k')
+            snr_vals, mean_p, se_p, mean_r, se_r = [], [], [], [], []
+            for snr_val in _snr_levels_sorted:
+                _mask_sn = _mask_m & (_all_snr == snr_val)
+                if _mask_sn.sum() < 2:
+                    continue
+                _py = _noise_cells[_prec_col_cell].astype(float)[_mask_sn]
+                _ry = _noise_cells[_rec_col_cell].astype(float)[_mask_sn]
+                snr_vals.append(snr_val)
+                mean_p.append(np.mean(_py))
+                se_p.append(np.std(_py, ddof=1) / np.sqrt(len(_py)))
+                mean_r.append(np.mean(_ry))
+                se_r.append(np.std(_ry, ddof=1) / np.sqrt(len(_ry)))
+            if len(snr_vals) >= 2:
+                sv   = np.array(snr_vals)
+                mp_  = np.array(mean_p); sp_ = np.array(se_p)
+                mr_  = np.array(mean_r); sr_ = np.array(se_r)
+                axA['noise_p'].plot(sv, mp_, '.-', color=color)
+                axA['noise_p'].fill_between(sv, mp_ - sp_, mp_ + sp_,
+                                             color=color, alpha=0.25, linewidth=0)
+                axA['noise_r'].plot(sv, mr_, '.-', color=color)
+                axA['noise_r'].fill_between(sv, mr_ - sr_, mr_ + sr_,
+                                             color=color, alpha=0.25, linewidth=0)
+    else:
+        for model in ['CaImAn MCMC', 'CASCADE_GPU', 'CASCADE_CPU', 'OASIS', 'fMCSI']:
+            m_rows = _tbl_filter(combined, 'Model', model)
+            if _tbl_len(m_rows) == 0:
+                continue
+            subset = _tbl_filter(m_rows, 'Experiment', 'Noise_Sensitivity')
+            if _tbl_len(subset) == 0 or 'SNR' not in subset:
+                continue
+            subset = _tbl_sort(subset, 'SNR')
+            if _tbl_len(subset) > 0:
+                axA['noise_p'].plot(subset['SNR'], subset[prec_col], '.-',
+                                    color=COLORS.get(model, 'k'))
+                axA['noise_r'].plot(subset['SNR'], subset[rec_col], '.-',
+                                    color=COLORS.get(model, 'k'))
 
     for ax_key, xlabel, ylabel in [
-        ('kurt_p', 'mean kurtosis', 'Precision'),
-        ('kurt_r', 'mean kurtosis', 'Recall'),
+        ('noise_p', 'SNR', 'Precision'),
+        ('noise_r', 'SNR', 'Recall'),
     ]:
         axA[ax_key].set_xlabel(xlabel)
         axA[ax_key].set_ylabel(ylabel)
-        axA[ax_key].set_ylim(0.45, 1.05)
-        axA[ax_key].set_xticks([2, 5, 8])
-        axA[ax_key].set_xlim(1.5, 9.5)
+        axA[ax_key].set_ylim(-0.05, 1.05)
+        axA[ax_key].set_xscale('log')
 
     figA.legend(handles=legend_handles, loc='upper center', ncol=5,
                 bbox_to_anchor=(0.5, 1.02), frameon=False, fontsize=7)
@@ -1432,8 +1494,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Figure 2: scaling and sensitivity benchmarks'
     )
-    parser.add_argument('--mode', required=True, choices=['test', 'plot'],
-                        help='"test" runs benchmarks; "plot" generates the figure')
+    parser.add_argument('--mode', required=True,
+                        choices=['test', 'plot', 'noise-cells'],
+                        help='"test" runs all benchmarks; "plot" generates the figure; '
+                             '"noise-cells" runs only the noise sensitivity benchmark and writes '
+                             'benchmark_noise_sensitivity_cells.npz without touching other result files')
     parser.add_argument('--data-dir', default=_DEFAULT_DATA_DIR,
                         help='Directory for reading/writing result files')
     parser.add_argument('--no-fmcsi',   action='store_true', help='Skip fMCSI')
@@ -1449,6 +1514,17 @@ if __name__ == '__main__':
             run_matlab  = not args.no_matlab,
             run_oasis   = not args.no_oasis,
             run_cascade = not args.no_cascade,
+        )
+    elif args.mode == 'noise-cells':
+        os.makedirs(args.data_dir, exist_ok=True)
+        print('=== Noise sensitivity cell-level benchmark (cells_only) ===')
+        benchmark_noise_sensitivity(
+            args.data_dir,
+            run_oasis   = not args.no_oasis,
+            run_matlab  = not args.no_matlab,
+            run_mine    = not args.no_fmcsi,
+            run_cascade = not args.no_cascade,
+            cells_only  = True,
         )
     else:
         plot_figure(data_dir=args.data_dir)

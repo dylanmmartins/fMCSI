@@ -16,7 +16,7 @@ from .HMC_exact2 import HMC_exact2
 
 @nb.njit(cache=True, fastmath=True)
 def _iir_filter(x, alpha, out):
-    """1-pole causal IIR (in-place): out[n] = x[n] + alpha*out[n-1]."""
+
     out[0] = x[0]
     for i in range(1, len(x)):
         out[i] = x[i] + alpha * out[i - 1]
@@ -24,7 +24,7 @@ def _iir_filter(x, alpha, out):
 
 @nb.njit(cache=True, fastmath=True)
 def _compute_ge(gr_max, T):
-    """Geometric decay envelope ge[t] = gr_max^t."""
+
     ge = np.empty(T, dtype=np.float32)
     ge[0] = 1.0
     for i in range(1, T):
@@ -35,6 +35,7 @@ def _compute_ge(gr_max, T):
 @nb.njit(cache=True, fastmath=True)
 def _bin_spikes_and_Gs(spiketimes, T, tau0, tau1, gr_min, gr_max, diff_gr, dt, p,
                        s_1, s_2, G1sp, G2sp, Gs):
+    
     s_1.fill(0.0)
     s_2.fill(0.0)
     for st in spiketimes:
@@ -58,6 +59,7 @@ def _bin_spikes_and_Gs(spiketimes, T, tau0, tau1, gr_min, gr_max, diff_gr, dt, p
 
 @nb.njit(cache=True, fastmath=True)
 def _bin_s1(spiketimes, T, tau0, dt, s_1):
+
     s_1.fill(0.0)
     for st in spiketimes:
         idx = int(np.ceil(st / dt)) - 1
@@ -70,6 +72,7 @@ def _bin_s1(spiketimes, T, tau0, dt, s_1):
 
 @nb.njit(cache=True, fastmath=True)
 def _bin_s2(spiketimes, T, tau1, dt, s_2):
+
     s_2.fill(0.0)
     for st in spiketimes:
         idx = int(np.ceil(st / dt)) - 1
@@ -82,6 +85,7 @@ def _bin_s2(spiketimes, T, tau1, dt, s_2):
 
 @nb.njit(cache=True, fastmath=True)
 def _posterior_update(Gs, ge, Y, isanY, sg2, ld_scale, mu):
+
     ATA = np.zeros((3, 3))
     ATy = np.zeros(3)
     for i in range(len(Y)):
@@ -112,6 +116,7 @@ def _posterior_update(Gs, ge, Y, isanY, sg2, ld_scale, mu):
 
 @nb.njit(cache=True, fastmath=True)
 def _residual_sse(Y, Gs, ge, A_val, b_val, C_in_val, isanY):
+
     sse = 0.0
     n_valid = 0
     for i in range(len(Y)):
@@ -124,6 +129,7 @@ def _residual_sse(Y, Gs, ge, A_val, b_val, C_in_val, isanY):
 
 @nb.njit(cache=True, fastmath=True)
 def _logC_nb(Y, Gs, ge, A_val, b_val, C_in_val, isanY):
+
     sse = 0.0
     for i in range(len(Y)):
         if isanY[i]:
@@ -260,7 +266,7 @@ def _mcmc_kernel_nb(
             spiketimes_, len(spiketimes_), curr_calcium, Ym_f32,
             ef_h, ef_d, ef_nh, ef_nd,
             tau, sg ** 2, float(lam_) * lam_scale,
-            float(std_move), add_move, dt, float(A_), con_lam,
+            float(std_move), add_move, dt, float(A_)
         )
 
         spiketimes = spiketimes_buf[:n_spikes_out].copy()
@@ -285,7 +291,8 @@ def _mcmc_kernel_nb(
         ss.append(spiketimes_.copy())
         nsp    = len(spiketimes_)
         ns[i]  = nsp
-        lam_   = max(nsp / (T * dt), 0.01)
+        if not con_lam:
+            lam_   = max(nsp / (T * dt), 0.01)
         lam[i] = lam_
 
 
@@ -470,8 +477,7 @@ def _mcmc_kernel_nb(
 
 
 def cont_ca_sampler(Y, params=None):
-    """ MCMC continuous-time sampler of spike times given fluorescence trace Y.
-    """
+
     Y = np.atleast_1d(Y).flatten().astype(np.float32)
     T = len(Y)
     isanY = ~np.isnan(Y)

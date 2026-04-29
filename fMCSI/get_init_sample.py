@@ -14,20 +14,7 @@ from scipy.signal import lfilter
 
 
 def _get_sn(y, range_ff):
-    """ Estimate noise std via PSD log-mean-exp method.
-    
-    Parameters
-    ----------
-    y : np.ndarray
-        Fluorescence trace of shape (T,).
-    range_ff : tuple
-        Frequency range for noise estimation, e.g., (0.25, 0.5).
 
-    Returns
-    -------
-    float
-        Estimated noise std.
-    """
     L = len(y)
     xdft = np.fft.rfft(y)
     psd = (1.0 / L) * np.abs(xdft) ** 2
@@ -41,15 +28,7 @@ def _get_sn(y, range_ff):
 
 
 def _estimate_time_constants(y, p, sn, lags=20):
-    """ Estimate AR(p) coefficients from sample autocovariance.
-    
-    Parameters
-    ----------
-    y : np.ndarray
-        Fluorescence trace of shape (T,).
-    p : int
-        AR order.
-    """
+
     lags = lags + p
     yn = y - np.mean(y)
     xc = np.zeros(lags + 2)
@@ -68,11 +47,7 @@ def _estimate_time_constants(y, p, sn, lags=20):
 
 
 def _ar_kernel(g, K):
-    """
-    AR(p) impulse response of length K via direct recursion.
-    h[0]=1, h[k] = sum_j g[j]*h[k-j-1].
-    Truncated at 1% of peak for efficiency.
-    """
+
     g = np.atleast_1d(g).flatten()
     h = np.zeros(K)
     h[0] = 1.0
@@ -90,25 +65,7 @@ def _ar_kernel(g, K):
 
 
 def _block_nnls_deconv(y_corr, h, T, block_size=400):
-    """
-    Block-wise NNLS deconvolution using scipy.optimize.nnls.
 
-    Divides the recording into non-overlapping blocks of `block_size` frames,
-    solves a dense NNLS system on each block, and corrects for calcium that
-    spills from earlier spikes into future blocks (overlap-add).  Memory cost
-    is O(block_size^2) rather than O(T^2).
-
-    Parameters
-    ----------
-    y_corr     : baseline- and c1-subtracted fluorescence (length T)
-    h          : AR impulse-response kernel (length K), h[0] = 1
-    T          : number of frames
-    block_size : NNLS block size (default 400 frames)
-
-    Returns
-    -------
-    sp : non-negative spike-amplitude array (length T)
-    """
     K = len(h)
     sp = np.zeros(T)
 
@@ -137,22 +94,7 @@ def _block_nnls_deconv(y_corr, h, T, block_size=400):
 
 
 def get_init_sample(Y, params):
-    """
-    Obtain the initial MCMC sample via block-wise NNLS deconvolution.
 
-    Replaces the CVXPY constrained_foopsi initialisation with
-    scipy.optimize.nnls applied in overlapping blocks, which is 5-50× faster
-    while producing an equally good starting point for MCMC burn-in.
-
-    Parameters
-    ----------
-    Y      : 1-D fluorescence trace
-    params : sampler parameter dict (same keys as cont_ca_sampler)
-
-    Returns
-    -------
-    SAM : dict with keys spiketimes_, lam_, A_, b_, C_in, sg, g
-    """
     options = {'p': params.get('p', 1)}
 
     required_keys = ['c', 'b', 'c1', 'g', 'sn', 'sp']

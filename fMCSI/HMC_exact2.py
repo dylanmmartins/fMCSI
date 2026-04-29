@@ -12,23 +12,6 @@ import numba as nb
 
 @nb.njit(cache=True, fastmath=True)
 def HMC_exact2(F, g, M, mu_r, cov, L, initial_X):
-    """
-    Returns samples from a d-dimensional Gaussian with m constraints F*X + g > 0.
-
-    Parameters:
-    F:         (m, d) numpy array
-    g:         (m, 1) numpy array
-    M:         (d, d) numpy array, symmetric positive definite
-    mu_r:      (d, 1) numpy array
-    cov:       bool. True -> M is covariance, mean is mu_r.
-               False -> M is precision matrix, log-density is -½ X'MX + r'X
-    L:         int, number of samples desired
-    initial_X: (d, 1) numpy array, must satisfy constraints
-
-    Returns:
-    Xs:           (d, L) numpy array, each column is a sample
-    bounce_count: int, number of boundary reflections
-    """
 
     m = g.shape[0]
     if F.shape[0] != m:

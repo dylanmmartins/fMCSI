@@ -16,40 +16,13 @@ from .spike_operations import replace_spike, add_spike, remove_spike
 def get_next_spikes(curr_spikes, n_spikes, curr_calcium, calcium_signal,
                     ef_h, ef_d, ef_nh, ef_nd,
                     tau, calcium_noise_var, lam_val,
-                    proposal_std, add_move, dt, A, con_lam):
-    """
-    Sample the next set of spike times given the current spike train and
-    observed fluorescence trace, using a pre-allocated array for spikes.
+                    proposal_std, add_move, dt, A):
 
-    Parameters:
-    curr_spikes:       1D np.array, current spike times (pre-allocated, continuous)
-    n_spikes:          int, current number of spikes in curr_spikes
-    curr_calcium:      1D np.array, current noiseless calcium trace
-    calcium_signal:    1D np.array, observed fluorescence trace
-    ef_h:              1D np.array, normalised rise kernel
-    ef_d:              1D np.array, normalised decay kernel
-    ef_nh:             1D np.array, cumsum(ef_h**2)
-    ef_nd:             1D np.array, cumsum(ef_d**2)
-    tau:               length-2 array, rise and decay time constants
-    calcium_noise_var: float, observation noise variance
-    lam_val:           float, (constant) firing rate
-    proposal_std:      float, std dev for spike-time perturbation
-    add_move:          int, number of add/remove proposals per sample
-    dt:                float, time-bin width
-    A:                 float, spike amplitude
-    con_lam:           bool, True = constant firing rate (skips rate ratio in move)
-
-    Returns:
-    new_spikes:  1D np.array, updated spike times (may be a new array if re-allocated)
-    new_n_spikes:int, new number of spikes
-    new_calcium: 1D np.array, updated calcium trace
-    moves:       (3, 2) np.array, [successes, attempts] for each move type
-    """
     T = len(calcium_signal)
     ff = ~np.isnan(calcium_signal)
 
     si = curr_spikes
-    new_calcium = curr_calcium # alias not copy
+    new_calcium = curr_calcium
     logC = -np.sum((new_calcium[ff] - calcium_signal[ff]) ** 2)
 
     time_moves = np.array([0, 0])

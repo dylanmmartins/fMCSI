@@ -9,7 +9,6 @@ Written Feb 2026, DMM
 import argparse
 import glob
 import os
-import sys
 import textwrap
 import h5py
 import numpy as np

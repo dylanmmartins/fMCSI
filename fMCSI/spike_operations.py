@@ -21,34 +21,6 @@ from numba import njit
 @njit(cache=True, fastmath=True)
 def add_spike(spike_train, n_spikes, old_calcium, old_ll, ef_h, ef_d, ef_nh, ef_nd,
               tau, obs_calcium, time_to_add, dt, A, check_only=False):
-    """
-    Add a given spike to the existing spike train using a pre-allocated array.
-
-    If the pre-allocated array is full, it will be re-allocated to double its
-    size. The new spike is appended to the end of the active elements.
-
-    Parameters:
-    spike_train:     1D np.array, pre-allocated spike train
-    n_spikes:        int, current number of spikes in spike_train
-    old_calcium:     1D np.array, current noiseless calcium trace
-    old_ll:          float, current value of the log-likelihood function
-    ef_h:            1D np.array, exponential rise kernel (normalised)
-    ef_d:            1D np.array, exponential decay kernel (normalised)
-    ef_nh:           1D np.array, cumsum of ef_h**2
-    ef_nd:           1D np.array, cumsum of ef_d**2
-    tau:             array-like of length 2, continuous time rise and decay time constants
-    obs_calcium:     1D np.array, observed fluorescence trace
-    time_to_add:     float, time of the spike to be added
-    dt:              float, time-bin width
-    A:               float, spike amplitude
-    check_only:      bool, if True, returns delta_ll without modifying arrays
-
-    Returns:
-    spike_train:     1D np.array, new or modified vector of spike times
-    new_n_spikes:    int, the new number of spikes
-    new_calcium:     1D np.array, new noiseless calcium trace
-    new_ll:          float, new value of the log-likelihood function
-    """
 
     tau_h, tau_d = tau[0], tau[1]
 
@@ -125,38 +97,9 @@ def add_spike(spike_train, n_spikes, old_calcium, old_ll, ef_h, ef_d, ef_nh, ef_
     return spike_train, new_n_spikes, old_calcium, new_ll
 
 
-
-
-
 @njit(cache=True, fastmath=True)
 def remove_spike(spike_train, n_spikes, old_calcium, old_ll, ef_h, ef_d, ef_nh, ef_nd,
                  tau, obs_calcium, time_to_remove, indx, dt, A, check_only=False):
-    """
-    Remove a given spike from the existing spike train using an in-place,
-    O(1) unordered removal (swap with the last element).
-
-    Parameters:
-    spike_train:     1D np.array, pre-allocated spike train
-    n_spikes:        int, current number of spikes in spike_train
-    old_calcium:     1D np.array, current noiseless calcium trace
-    old_ll:          float, current value of the log-likelihood function
-    ef_h:            1D np.array, exponential rise kernel (normalised)
-    ef_d:            1D np.array, exponential decay kernel (normalised)
-    ef_nh:           1D np.array, cumsum of ef_h**2
-    ef_nd:           1D np.array, cumsum of ef_d**2
-    tau:             array-like of length 2, continuous time rise and decay time constants
-    obs_calcium:     1D np.array, observed fluorescence trace
-    time_to_remove:  float, time of the spike to be removed
-    indx:            int, 0-based index where the spike to be removed is located
-    dt:              float, time-bin width
-    A:               float, spike amplitude
-    check_only:      bool, if True, returns delta_ll without modifying arrays
-
-    Returns:
-    new_n_spikes:    int, the new number of spikes
-    new_calcium:     1D np.array, new noiseless calcium trace
-    new_ll:          float, new value of the log-likelihood function
-    """
 
     tau_h, tau_d = tau[0], tau[1]
 
@@ -227,35 +170,9 @@ def remove_spike(spike_train, n_spikes, old_calcium, old_ll, ef_h, ef_d, ef_nh, 
     return new_n_spikes, old_calcium, new_ll
 
 
-
-
-
 @njit(cache=True, fastmath=True)
 def replace_spike(spike_train, old_calcium, old_ll, ef_h, ef_d, ef_nh, ef_nd, tau,
                   obs_calcium, time_to_remove, indx, time_to_add, dt, A, check_only=False):
-    """
-    Replace a given spike with a new one in the existing spike train, in-place.
-
-    Parameters:
-    spike_train:     1D np.array, current spike train (modified in-place)
-    old_calcium:     1D np.array, current noiseless calcium trace
-    old_ll:          float, current value of the log-likelihood function
-    ef_h:            1D np.array, exponential rise kernel (normalised)
-    ef_d:            1D np.array, exponential decay kernel (normalised)
-    ef_nh:           1D np.array, cumsum of ef_h**2
-    ef_nd:           1D np.array, cumsum of ef_d**2
-    tau:             array-like of length 2, continuous time rise and decay time constants
-    obs_calcium:     1D np.array, observed fluorescence trace
-    time_to_remove:  float, time of the spike to be removed
-    indx:            int, 0-based index where the spike to be removed is in the vector
-    time_to_add:     float, time of the spike to be added
-    dt:              float, time-bin width
-    A:               float, spike amplitude
-
-    Returns:
-    new_calcium:     1D np.array, new noiseless calcium trace
-    new_ll:          float, new value of the log-likelihood function
-    """
 
     tau_h, tau_d = tau[0], tau[1]
 

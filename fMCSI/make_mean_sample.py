@@ -11,7 +11,7 @@ import numba as nb
 
 @nb.njit(cache=True, fastmath=True)
 def _iir_filter(x, alpha):
-    """1-pole causal IIR: y[n] = x[n] + alpha*y[n-1]."""
+
     y = np.empty_like(x)
     y[0] = x[0]
     for i in range(1, len(x)):
@@ -21,12 +21,7 @@ def _iir_filter(x, alpha):
 
 @nb.njit(cache=True, fastmath=True)
 def _compute_single_trace(ss_arr, T, tau0, tau1, am_val, cb_val, cin_val, dt):
-    """
-    Compute the reconstructed calcium trace for one MCMC sample.
 
-    Replaces per-sample scipy.signal.lfilter calls with the JIT'd _iir_filter
-    and bins spike times in the same loop that computes the kernel weights.
-    """
     gr0 = np.float32(np.exp(-dt / tau0)) if tau0 > 0.0 else np.float32(0.0)
     gr1 = np.float32(np.exp(-dt / tau1))
     diff_gr = gr1 - gr0   # float32
@@ -72,21 +67,7 @@ def _compute_single_trace(ss_arr, T, tau0, tau1, am_val, cb_val, cin_val, dt):
 
 
 def make_mean_sample(SAMPLES, Y):
-    """
-    Construct the mean calcium trace from posterior samples.
 
-    Parameters:
-    SAMPLES: dict, output of cont_ca_sampler
-    Y:       1D np.array, observed fluorescence trace
-
-    Returns:
-    c_m:     1D np.array, mean reconstructed calcium trace
-
-    Acceleration: the per-sample reconstruction (binning + IIR filtering +
-    trace assembly) is delegated to the JIT'd _compute_single_trace kernel,
-    cutting the Python-loop overhead to just N iterations of lightweight
-    scalar indexing.
-    """
     T = len(Y)
     N = len(SAMPLES['ns'])
     P = SAMPLES['params']

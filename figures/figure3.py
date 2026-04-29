@@ -1002,7 +1002,7 @@ def _plot_combined_raster_trace(ax, cells, window=60.0):
     method_rows = [
         ('OASIS',        'oasis_spikes', model_colors['OASIS'],     0),
         ('CASCADE',      'cas_spikes',   model_colors['CASCADE'],   1),
-        ('MATLAB',    'trad_spikes',  model_colors['MATLAB'], 2),
+        ('CaImAn',    'trad_spikes',  model_colors['MATLAB'], 2),
         ('fMCSI',    'my_spikes',    model_colors['fMCSI'], 3),
         ('Ground Truth', 'true_spikes',  '#111111',                 4),
     ]
@@ -1120,7 +1120,7 @@ def _plot_f1_violin(ax, alldata, taus, f1_key='f1'):
     ax.set_xticks(group_ticks); ax.set_xticklabels(group_labels)
     ax.set_ylim(-0.05, 1.05)
     ax.set_ylabel(r'$F_\beta$ (strict)' if f1_key in ('f1', 'fbeta')
-                  else r'$F_\beta$ (window)')
+                  else r'$F_\beta$')
     ax.tick_params(axis='both')
 
 
@@ -1167,7 +1167,7 @@ def _plot_fbeta_violin(ax, alldata):
         if len(vals) >= 2:
             positions.append(i); violin_data.append(vals)
             violin_colors.append(model_colors.get(model_name, 'k'))
-            tick_labels.append(model_name)
+            tick_labels.append('CaImAn' if model_name == 'MATLAB' else model_name)
     if violin_data:
         parts = ax.violinplot(violin_data, positions=positions,
                               showmedians=True, widths=0.65)
@@ -1192,7 +1192,7 @@ def _plot_cosmic_violin(ax, alldata):
         if len(vals) >= 2:
             positions.append(i); violin_data.append(vals)
             violin_colors.append(model_colors.get(model_name, 'k'))
-            tick_labels.append(model_name)
+            tick_labels.append('CaImAn' if model_name == 'MATLAB' else model_name)
     if violin_data:
         parts = ax.violinplot(violin_data, positions=positions,
                               showmedians=True, widths=0.65)
