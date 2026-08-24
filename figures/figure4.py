@@ -390,7 +390,7 @@ def compute_accuracy_window_oto(true_spikes, predicted_spikes, tolerance=0.1):
     """One-to-one window matching via the Hungarian algorithm.
 
     Each true spike and each predicted spike can participate in at most one
-    match, and the assignment maximises the total number of matched pairs.
+    match, and the assignment maximizes the total number of matched pairs.
 
     Parameters
     ----------
@@ -425,7 +425,7 @@ def compute_accuracy_window_oto(true_spikes, predicted_spikes, tolerance=0.1):
             precs.append(0.0); recs.append(1.0); f1s.append(0.0); continue
 
         # Cost matrix: distance for within-tolerance pairs, large sentinel otherwise.
-        # linear_sum_assignment minimises total cost, so valid matches (cost < 1)
+        # linear_sum_assignment minimizes total cost, so valid matches (cost < 1)
         # are always preferred over unmatched assignments (cost = 1).
         dist = np.abs(t[:, None] - p[None, :])   # (n_true, n_pred)
         cost = np.where(dist <= tolerance, dist, 1.0)

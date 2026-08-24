@@ -49,7 +49,7 @@ mpl.rcParams['svg.fonttype'] = 'none'
 mpl.rcParams['font.size']    = 7
 
 def _dff_kurtosis(fluo):
-    """Excess kurtosis computed on a dF/F-normalised trace (8th-pct baseline)."""
+    """Excess kurtosis computed on a dF/F-normalized trace (8th-pct baseline)."""
 
     f = np.asarray(fluo, dtype=np.float64)
     b = float(np.percentile(f, 8))

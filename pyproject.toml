@@ -26,5 +26,5 @@ figures = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["OMSI*"]

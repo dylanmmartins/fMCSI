@@ -56,7 +56,7 @@ mpl.rcParams['svg.fonttype'] = 'none'
 mpl.rcParams['font.size']    = 7
 
 def _dff_kurtosis(fluo):
-    """Excess kurtosis computed on a dF/F-normalised trace (8th-pct baseline)."""
+    """Excess kurtosis computed on a dF/F-normalized trace (8th-pct baseline)."""
 
     f = np.asarray(fluo, dtype=np.float64)
     b = float(np.percentile(f, 8))
@@ -352,7 +352,7 @@ def _plot_single_raster(ax, cell, window=30.0,
     show_method_labels : bool, optional
         Whether to draw row method labels.
     cell_number : int or None, optional
-        Cell index label drawn in the centre.
+        Cell index label drawn in the center.
     """
 
     rr  = 0.85
